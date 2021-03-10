@@ -1,0 +1,11 @@
+# base ----------------------------------------
+Cython
+numpy
+Pillow
+scipy
+gputil
+grpcio
+paho-mqtt
+pandas
+streamlit
+meson
