@@ -19,6 +19,7 @@ import streamlit as st
 st.set_page_config(layout="wide")
 
 TEST_IMAGES = {
+    "-": "",
     "Front 3840x2160 cam": ["http://192.168.10.211/snap.jpeg", "rtsp://192.168.10.1:7447/ySci8n2TNfOncXMb"],
     "Front 640x360 cam": ["http://192.168.10.211/snap.jpeg", "rtsp://192.168.10.1:7447/ahoCPkXFexpDjXAS"],
     "Wifi 640x360 cam": ["http://192.168.10.190/snap.jpeg", "rtsp://192.168.10.1:7447/aVw23e6tyMAWliBD"],
@@ -159,13 +160,7 @@ while True:
         tic = time.perf_counter()
         pil_image = Image.fromarray(npimage)
     else:
-        if img_file_buffer is not None:
-            pil_image = Image.open(img_file_buffer)
-        else:
-            if "http" in filename:
-                pil_image = Image.open(urllib.request.urlopen(filename))
-            else:
-                pil_image = Image.open(filename)
+        break
 
     if model is not None and model != "none":
         img_byte_arr = io.BytesIO()
@@ -178,7 +173,7 @@ while True:
         inferf = time.perf_counter()
         objects = get_objects(response, pil_image.width, pil_image.height)
 
-        if False:
+        if True:
             for obj in objects:
                 name = obj["name"]
                 confidence = obj["confidence"]

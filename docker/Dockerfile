@@ -1,4 +1,5 @@
-FROM nvcr.io/nvidia/cuda:11.1.1-cudnn8-devel-ubuntu18.04
+ARG BASE_IMAGE="nvcr.io/nvidia/cuda:11.1.1-cudnn8-devel-ubuntu18.04"
+FROM ${BASE_IMAGE} AS deps
 
 ENV PYTHONUNBUFFERED TRUE
 
@@ -7,57 +8,118 @@ USER root
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
 
-RUN apt-get update
-RUN apt-get install -y sudo
-RUN apt-get install -y git mc vim cmake wget curl
-#gstreamer
-RUN apt-get install -y libgstreamer1.0-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-doc gstreamer1.0-tools gstreamer1.0-x gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-pulseaudio libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
-RUN apt-get install -y libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libavresample-dev libdc1394-22-dev libharfbuzz-dev freetype2-demos libtesseract-dev tesseract-ocr
-#mosquito
-RUN apt-get install -y mosquitto mosquitto-clients
-#ffmpeg
-RUN apt-get -y install autoconf automake build-essential cmake git-core libass-dev libfreetype6-dev libgnutls28-dev libsdl2-dev libtool libva-dev libvdpau-dev libvorbis-dev libxcb1-dev libxcb-shm0-dev libxcb-xfixes0-dev meson ninja-build pkg-config texinfo wget yasm zlib1g-dev nasm libx264-dev libvpx-dev libx265-dev libnuma-dev libfdk-aac-dev libunistring-dev libmp3lame-dev libopus-dev
-#python3.8
-RUN apt-get install -y software-properties-common
-RUN add-apt-repository -y ppa:deadsnakes/ppa
-RUN apt-get install -y python3.8 python3.8-dev
-RUN apt-get install -y python3-pip
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.6 1
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.8 2
-RUN update-alternatives --set python3 /usr/bin/python3.8
-RUN python3 -m pip install --upgrade pip
-
-RUN addgroup --gid 1000 tstreamer
-RUN useradd -rm -d /home/tstreamer -s /bin/bash -G sudo -u 1000 --gid 1000 tstreamer && mkdir -p /home/tstreamer/tmp
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-RUN echo 'tstreamer:tstreamer' | chpasswd
+
+RUN apt-get update && apt-get install -y software-properties-common && add-apt-repository -y ppa:deadsnakes/ppa \
+  && apt-get update \
+  && apt-get install -y sudo git mc vim cmake wget curl bison flex libbison-dev libfl-dev libfl2 autopoint \
+  mosquitto mosquitto-clients \
+  autoconf automake build-essential cmake git-core libass-dev libfreetype6-dev libgnutls28-dev libsdl2-dev libtool libva-dev libvdpau-dev libvorbis-dev libxcb1-dev libxcb-shm0-dev libxcb-xfixes0-dev \
+  meson ninja-build pkg-config texinfo wget yasm zlib1g-dev nasm libx264-dev libvpx-dev libx265-dev libnuma-dev libfdk-aac-dev libunistring-dev libmp3lame-dev libopus-dev libsdl-pango-dev libjpeg-dev libbz2-dev libflac-dev libssl-dev libsrtp2-dev libmpeg2-4-dev libgirepository1.0-dev python3-cairo-dev \
+  python3.8 python3.8-dev python3-pip \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.6 1 && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.8 2 && update-alternatives --set python3 /usr/bin/python3.8 && python3 -m pip install --upgrade pip
+
+RUN addgroup --gid 1000 tstreamer && useradd -rm -d /home/tstreamer -s /bin/bash -G sudo -u 1000 --gid 1000 tstreamer && mkdir -p /home/tstreamer/tmp && echo 'tstreamer:tstreamer' | chpasswd
 
 COPY dockerd-entrypoint.sh /usr/local/bin/dockerd-entrypoint.sh
 RUN chmod +x /usr/local/bin/dockerd-entrypoint.sh && chown -R tstreamer /home/tstreamer
 
 USER tstreamer
-
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
 ENV HISTFILE=/home/bash/.bash_history_tstreamer
-ENV PATH=$PATH:/home/tstreamer/.local/bin
+ENV PATH=/home/tstreamer/.local/bin:$PATH
 
 RUN chown -R tstreamer:tstreamer /home/tstreamer
 
 COPY --chown=tstreamer requirements.txt /home/tstreamer/requirements.txt
-RUN pip install -r /home/tstreamer/requirements.txt
-RUN pip uninstall -y enum34
-RUN rm /home/tstreamer/requirements.txt
+RUN pip install -r /home/tstreamer/requirements.txt && pip uninstall -y enum34 && rm /home/tstreamer/requirements.txt
+
+#vulkan
+USER root
+RUN wget -qO - http://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add - && wget -qO /etc/apt/sources.list.d/lunarg-vulkan-bionic.list http://packages.lunarg.com/vulkan/lunarg-vulkan-bionic.list && apt update && apt install -y vulkan-sdk && rm -rf /var/lib/apt/lists/*
+
+FROM deps as gstreamer
+
+# ffmpeg
+USER tstreamer
+WORKDIR /home/tstreamer
+RUN git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg_source/ --branch release/4.2 --single-branch
+WORKDIR /home/tstreamer/ffmpeg_source
+RUN PATH="$HOME/.local/bin:$PATH" PKG_CONFIG_PATH="/usr/local/lib/pkgconfig" ./configure \
+  --prefix="$HOME/.local" \
+  --pkg-config-flags="--static" \
+  --extra-cflags="-I$HOME/.local/include" \
+  --extra-ldflags="-L$HOME/.local/lib" \
+  --extra-libs="-lpthread -lm" \
+  --ld="g++" \
+  --bindir="$HOME/.local/bin" \
+  --enable-gpl \
+  --enable-gnutls \
+  --enable-libass \
+  --enable-libfdk-aac \
+  --enable-libfreetype \
+  --enable-libmp3lame \
+  --enable-libopus \
+  --enable-libvorbis \
+  --enable-libvpx \
+  --enable-libx264 \
+  --enable-libx265 \
+  --enable-nonfree \
+  --enable-cuda-nvcc --enable-libnpp --extra-cflags=-I/usr/local/cuda/include --extra-ldflags=-L/usr/local/cuda/lib64 --nvccflags="-gencode arch=compute_61,code=sm_61" --nvcc=/usr/local/cuda/bin/nvcc \
+  && PATH="$HOME/.local/bin:$PATH" && make -j$(nproc) && make install
+ENV PKG_CONFIG_PATH=/home/tstreamer/.local/lib/pkgconfig:/usr/local/lib/pkgconfig
+
+#gstreamer
+USER root
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64/:/usr/local/cuda/lib64/stubs:$LD_LIBRARY_PATH
+ARG NVIDIA_DRIVER_VERSION="455.38"
+ENV NVIDIA_DRIVER_VERSION=${NVIDIA_DRIVER_VERSION}
+RUN echo $NVIDIA_DRIVER_VERSION
+COPY gst-nvenc/libnvidia-encode.so.${NVIDIA_DRIVER_VERSION} /usr/local/cuda/lib64/stubs/libnvidia-encode.so.1
+COPY gst-nvenc/libnvcuvid.so.${NVIDIA_DRIVER_VERSION} /usr/local/cuda/lib64/stubs/libnvcuvid.so.1
+RUN ln -s /usr/local/cuda/lib64/stubs/libnvidia-encode.so.1 /usr/local/cuda/lib64/stubs/libnvidia-encode.so && ln -s /usr/local/cuda/lib64/stubs/libnvcuvid.so.1 /usr/local/cuda/lib64/stubs/libnvcuvid.so && ldconfig
+
+USER tstreamer
+WORKDIR /home/tstreamer
+RUN git clone https://github.com/GStreamer/orc.git \
+  && git clone https://github.com/GStreamer/gstreamer.git --branch 1.18.3 --single-branch \
+  && git clone https://github.com/GStreamer/gst-plugins-base.git --branch 1.18.3 --single-branch \
+  && git clone https://github.com/GStreamer/gst-plugins-good.git --branch 1.18.3 --single-branch \
+  && git clone https://github.com/GStreamer/gst-plugins-bad.git --branch 1.18.3 --single-branch \
+  && git clone https://github.com/GStreamer/gst-plugins-ugly.git --branch 1.18.3 --single-branch \
+  && git clone https://github.com/GStreamer/gst-libav.git --branch 1.18.3 --single-branch \
+  && git clone https://github.com/GStreamer/gst-python.git --branch 1.18.3 --single-branch \
+  && git clone https://github.com/GNOME/pygobject
+
+USER tstreamer
+ENV PKG_CONFIG_PATH=/home/tstreamer/.local/lib/x86_64-linux-gnu/pkgconfig:/home/tstreamer/gst-plugins-base/build/pkgconfig/:$PKG_CONFIG_PATH
+RUN for gs in `echo "orc gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav pygobject"`; do \
+cd /home/tstreamer/$gs; \
+rm -rf /home/tstreamer/$gs/build; \
+mkdir -p /home/tstreamer/$gs/build; \
+cd /home/tstreamer/$gs/build; \
+/home/tstreamer/.local/bin/meson --prefix="$HOME/.local" -Dbuildtype=release -Dpackage-origin=xaser -Dpackage-name="GStreamer" --wrap-mode=nodownload; \
+ninja; \
+ninja install; \
+done
+ENV LD_LIBRARY_PATH=/home/tstreamer/.local/lib/x86_64-linux-gnu:/usr/local/cuda/lib64/:/usr/local/cuda/lib64/stubs:$LD_LIBRARY_PATH
+USER root
+RUN ldconfig
+
+FROM deps as gsopencv
+COPY --from=gstreamer /home/tstreamer/.local /home/tstreamer/.local
 
 # opencv
 USER tstreamer
 WORKDIR /home/tstreamer
-RUN git clone https://github.com/opencv/opencv.git
-RUN mkdir -p /home/tstreamer/opencv/build
+RUN git clone https://github.com/opencv/opencv.git &&  mkdir -p /home/tstreamer/opencv/build
+ENV PKG_CONFIG_PATH=/home/tstreamer/.local/lib/x86_64-linux-gnu/pkgconfig:/home/tstreamer/gst-plugins-base/build/pkgconfig/:$PKG_CONFIG_PATH
+ENV LD_LIBRARY_PATH=/home/tstreamer/.local/lib:/home/tstreamer/.local/lib/x86_64-linux-gnu:/usr/local/cuda/lib64:/usr/local/cuda/lib64/stubs:$LD_LIBRARY_PATH
 WORKDIR /home/tstreamer/opencv/build
-RUN git checkout 4.5.1
-RUN wget -O opencv_contrib.zip https://github.com/opencv/opencv_contrib/archive/4.5.1.zip
-RUN unzip opencv_contrib.zip
+RUN git checkout 4.5.1 && wget -O opencv_contrib.zip https://github.com/opencv/opencv_contrib/archive/4.5.1.zip && unzip opencv_contrib.zip
 RUN cmake -D CMAKE_BUILD_TYPE=RELEASE \
 -D INSTALL_PYTHON_EXAMPLES=ON \
 -D INSTALL_C_EXAMPLES=OFF \
@@ -66,7 +128,7 @@ RUN cmake -D CMAKE_BUILD_TYPE=RELEASE \
 -D BUILD_opencv_python2=OFF \
 -D BUILD_PYTHON_SUPPORT=ON \
 -D BUILD_NEW_PYTHON_SUPPORT=ON \
--D CMAKE_INSTALL_PREFIX=$(python3 -c "import sys; print(sys.prefix)") \
+-D CMAKE_INSTALL_PREFIX="$HOME/.local" \
 -D PYTHON3_EXECUTABLE=$(which python3) \
 -D PYTHON3_INCLUDE_DIR=$(python3 -c "from distutils.sysconfig import get_python_inc; print(get_python_inc())") \
 -D PYTHON3_PACKAGES_PATH=$(python3 -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())") \
@@ -83,90 +145,16 @@ RUN cmake -D CMAKE_BUILD_TYPE=RELEASE \
 -D WITH_OPENCL=OFF \
 -D WITH_CUDNN=ON \
 -D OPENCV_DNN_CUDA=ON \
--D BUILD_EXAMPLES=ON ..
+-D BUILD_EXAMPLES=ON .. \
+&& make -j$(nproc) \
+&& make install
 USER root
-WORKDIR /home/tstreamer/opencv/build
-RUN make -j$(nproc)
-RUN make install
 RUN ldconfig
 
-#vulkan
-USER root
-RUN wget -qO - http://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
-RUN wget -qO /etc/apt/sources.list.d/lunarg-vulkan-bionic.list http://packages.lunarg.com/vulkan/lunarg-vulkan-bionic.list
-RUN apt update
-RUN apt install -y vulkan-sdk
-
-#nvenc
-USER tstreamer
-WORKDIR /home/tstreamer
-RUN git clone git://anongit.freedesktop.org/gstreamer/gst-plugins-bad
-WORKDIR /home/tstreamer/gst-plugins-bad
-RUN git checkout $(gst-launch-1.0 --version | grep version | tr -s ' ' '\n' | tail -1)
-COPY gst-nvenc/nvEncodeAPI.h /usr/local/cuda/include
-COPY gst-nvenc/cuviddec.h /usr/local/cuda/include
-COPY gst-nvenc/nvcuvid.h /usr/local/cuda/include
-COPY gst-nvenc/libnvidia-encode.so /usr/local/cuda/lib64/stubs
-COPY gst-nvenc/libnvcuvid.so /usr/local/cuda/lib64/stubs
-WORKDIR /home/tstreamer/gst-plugins-bad
-RUN ./autogen.sh --disable-gtk-doc --noconfigure
-ENV NVENCODE_CFLAGS="-I/usr/local/cuda/include"
-RUN ./configure --with-cuda-prefix="/usr/local/cuda"
-WORKDIR /home/tstreamer/gst-plugins-bad/sys/nvenc
-RUN make
-WORKDIR /home/tstreamer/gst-plugins-bad/sys/nvdec
-RUN make
-USER root
-RUN cp /home/tstreamer/gst-plugins-bad/sys/nvenc/.libs/libgstnvenc.so /usr/lib/x86_64-linux-gnu/gstreamer-1.0/
-RUN cp /home/tstreamer/gst-plugins-bad/sys/nvdec/.libs/libgstnvdec.so /usr/lib/x86_64-linux-gnu/gstreamer-1.0/
-ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64/:/usr/local/cuda/lib64/stubs:/usr/local/lib/gstreamer-1.0
-RUN ldconfig
-
-# ffmpeg
-USER tstreamer
-WORKDIR /home/tstreamer
-RUN git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg/
-ENV PKG_CONFIG_PATH="/usr/local/lib/pkgconfig"
-WORKDIR /home/tstreamer/ffmpeg
-RUN ./configure \
-  --prefix="/usr/local" \
-  --pkg-config-flags="--static" \
-  --extra-cflags="-I$HOME/ffmpeg_build/include" \
-  --extra-ldflags="-L$HOME/ffmpeg_build/lib" \
-  --extra-libs="-lpthread -lm" \
-  --ld="g++" \
-  --bindir="$HOME/bin" \
-  --enable-gpl \
-  --enable-gnutls \
-  --enable-libass \
-  --enable-libfdk-aac \
-  --enable-libfreetype \
-  --enable-libmp3lame \
-  --enable-libopus \
-  --enable-libvorbis \
-  --enable-libvpx \
-  --enable-libx264 \
-  --enable-libx265 \
-  --enable-nonfree \
-  --enable-cuda-nvcc --enable-libnpp --extra-cflags=-I/usr/local/cuda/include --extra-ldflags=-L/usr/local/cuda/lib64 --nvccflags="-gencode arch=compute_52,code=sm_52" --nvcc=/usr/local/cuda/bin/nvcc
-# --enable-libaom \
-#  --enable-libsvtav1 \
-#  --enable-libdav1d \
-USER root
-RUN make
-RUN make install
-
-#nvcodec
-USER tstreamer
-WORKDIR /home/tstreamer
-RUN git clone https://git.videolan.org/git/ffmpeg/nv-codec-headers.git
-WORKDIR /home/tstreamer/nv-codec-headers
-USER root
-RUN make
-RUN make install
+FROM gsopencv as final
+COPY --from=gstreamer /home/tstreamer/.local /home/tstreamer/.local
 
 USER tstreamer
 WORKDIR /home/tstreamer
-
 ENTRYPOINT ["/usr/local/bin/dockerd-entrypoint.sh"]
 CMD ["ls"]

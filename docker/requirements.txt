@@ -9,3 +9,5 @@ paho-mqtt
 pandas
 streamlit
 meson
+pycairo
+PyGObject
