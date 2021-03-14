@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y software-properties-common && add-apt-r
   autoconf automake build-essential cmake git-core libass-dev libfreetype6-dev libgnutls28-dev libsdl2-dev libtool libva-dev libvdpau-dev libvorbis-dev libxcb1-dev libxcb-shm0-dev libxcb-xfixes0-dev \
   meson ninja-build pkg-config texinfo wget yasm zlib1g-dev nasm libx264-dev libvpx-dev libx265-dev libnuma-dev libfdk-aac-dev libunistring-dev libmp3lame-dev libopus-dev libsdl-pango-dev libjpeg-dev libbz2-dev libflac-dev libssl-dev libsrtp2-dev libmpeg2-4-dev libgirepository1.0-dev python3-cairo-dev \
   python3.8 python3.8-dev python3-pip \
+  libtesseract-dev tesseract-ocr \
   && rm -rf /var/lib/apt/lists/*
 
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.6 1 && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.8 2 && update-alternatives --set python3 /usr/bin/python3.8 && python3 -m pip install --upgrade pip
@@ -31,6 +32,11 @@ ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
 ENV HISTFILE=/home/bash/.bash_history_tstreamer
 ENV PATH=/home/tstreamer/.local/bin:$PATH
+ENV LD_LIBRARY_PATH=/home/tstreamer/.local/lib:/home/tstreamer/.local/lib/x86_64-linux-gnu:/usr/local/cuda/lib64/:/usr/local/cuda/lib64/stubs:$LD_LIBRARY_PATH
+ENV PKG_CONFIG_PATH=/home/tstreamer/.local/lib/pkgconfig:/home/tstreamer/.local/lib/x86_64-linux-gnu/pkgconfig:/home/tstreamer/gst-plugins-base/build/pkgconfig/:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
+#ENV PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR:/home/tstreamer/.local/lib
+ENV GI_TYPELIB_PATH=/home/tstreamer/.local/lib/x86_64-linux-gnu/girepository-1.0/
+ENV XDG_DATA_DIRS=/home/tstreamer/.local/share/:/usr/share/:$XDG_DATA_DIRS
 
 RUN chown -R tstreamer:tstreamer /home/tstreamer
 
@@ -41,7 +47,17 @@ RUN pip install -r /home/tstreamer/requirements.txt && pip uninstall -y enum34 &
 USER root
 RUN wget -qO - http://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add - && wget -qO /etc/apt/sources.list.d/lunarg-vulkan-bionic.list http://packages.lunarg.com/vulkan/lunarg-vulkan-bionic.list && apt update && apt install -y vulkan-sdk && rm -rf /var/lib/apt/lists/*
 
-FROM deps as gstreamer
+#nvidia libs
+USER root
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64/:/usr/local/cuda/lib64/stubs:$LD_LIBRARY_PATH
+ARG NVIDIA_DRIVER_VERSION="455.38"
+ENV NVIDIA_DRIVER_VERSION=${NVIDIA_DRIVER_VERSION}
+RUN echo $NVIDIA_DRIVER_VERSION
+COPY gst-nvenc/libnvidia-encode.so.${NVIDIA_DRIVER_VERSION} /usr/local/cuda/lib64/stubs/libnvidia-encode.so.1
+COPY gst-nvenc/libnvcuvid.so.${NVIDIA_DRIVER_VERSION} /usr/local/cuda/lib64/stubs/libnvcuvid.so.1
+RUN ln -s /usr/local/cuda/lib64/stubs/libnvidia-encode.so.1 /usr/local/cuda/lib64/stubs/libnvidia-encode.so && ln -s /usr/local/cuda/lib64/stubs/libnvcuvid.so.1 /usr/local/cuda/lib64/stubs/libnvcuvid.so && ldconfig
+
+FROM deps as ffmpeg
 
 # ffmpeg
 USER tstreamer
@@ -68,19 +84,14 @@ RUN PATH="$HOME/.local/bin:$PATH" PKG_CONFIG_PATH="/usr/local/lib/pkgconfig" ./c
   --enable-libx264 \
   --enable-libx265 \
   --enable-nonfree \
+  --enable-pic \
+  --enable-shared \
   --enable-cuda-nvcc --enable-libnpp --extra-cflags=-I/usr/local/cuda/include --extra-ldflags=-L/usr/local/cuda/lib64 --nvccflags="-gencode arch=compute_61,code=sm_61" --nvcc=/usr/local/cuda/bin/nvcc \
+  --enable-pic \
   && PATH="$HOME/.local/bin:$PATH" && make -j$(nproc) && make install
-ENV PKG_CONFIG_PATH=/home/tstreamer/.local/lib/pkgconfig:/usr/local/lib/pkgconfig
 
-#gstreamer
-USER root
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64/:/usr/local/cuda/lib64/stubs:$LD_LIBRARY_PATH
-ARG NVIDIA_DRIVER_VERSION="455.38"
-ENV NVIDIA_DRIVER_VERSION=${NVIDIA_DRIVER_VERSION}
-RUN echo $NVIDIA_DRIVER_VERSION
-COPY gst-nvenc/libnvidia-encode.so.${NVIDIA_DRIVER_VERSION} /usr/local/cuda/lib64/stubs/libnvidia-encode.so.1
-COPY gst-nvenc/libnvcuvid.so.${NVIDIA_DRIVER_VERSION} /usr/local/cuda/lib64/stubs/libnvcuvid.so.1
-RUN ln -s /usr/local/cuda/lib64/stubs/libnvidia-encode.so.1 /usr/local/cuda/lib64/stubs/libnvidia-encode.so && ln -s /usr/local/cuda/lib64/stubs/libnvcuvid.so.1 /usr/local/cuda/lib64/stubs/libnvcuvid.so && ldconfig
+FROM deps as gstreamer
+COPY --from=ffmpeg /home/tstreamer/.local /home/tstreamer/.local
 
 USER tstreamer
 WORKDIR /home/tstreamer
@@ -95,8 +106,7 @@ RUN git clone https://github.com/GStreamer/orc.git \
   && git clone https://github.com/GNOME/pygobject
 
 USER tstreamer
-ENV PKG_CONFIG_PATH=/home/tstreamer/.local/lib/x86_64-linux-gnu/pkgconfig:/home/tstreamer/gst-plugins-base/build/pkgconfig/:$PKG_CONFIG_PATH
-RUN for gs in `echo "orc gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav pygobject"`; do \
+RUN for gs in `echo "orc gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav pygobject gst-python"`; do \
 cd /home/tstreamer/$gs; \
 rm -rf /home/tstreamer/$gs/build; \
 mkdir -p /home/tstreamer/$gs/build; \
@@ -105,8 +115,7 @@ cd /home/tstreamer/$gs/build; \
 ninja; \
 ninja install; \
 done
-ENV LD_LIBRARY_PATH=/home/tstreamer/.local/lib/x86_64-linux-gnu:/usr/local/cuda/lib64/:/usr/local/cuda/lib64/stubs:$LD_LIBRARY_PATH
-USER root
+USER  root
 RUN ldconfig
 
 FROM deps as gsopencv
@@ -116,8 +125,6 @@ COPY --from=gstreamer /home/tstreamer/.local /home/tstreamer/.local
 USER tstreamer
 WORKDIR /home/tstreamer
 RUN git clone https://github.com/opencv/opencv.git &&  mkdir -p /home/tstreamer/opencv/build
-ENV PKG_CONFIG_PATH=/home/tstreamer/.local/lib/x86_64-linux-gnu/pkgconfig:/home/tstreamer/gst-plugins-base/build/pkgconfig/:$PKG_CONFIG_PATH
-ENV LD_LIBRARY_PATH=/home/tstreamer/.local/lib:/home/tstreamer/.local/lib/x86_64-linux-gnu:/usr/local/cuda/lib64:/usr/local/cuda/lib64/stubs:$LD_LIBRARY_PATH
 WORKDIR /home/tstreamer/opencv/build
 RUN git checkout 4.5.1 && wget -O opencv_contrib.zip https://github.com/opencv/opencv_contrib/archive/4.5.1.zip && unzip opencv_contrib.zip
 RUN cmake -D CMAKE_BUILD_TYPE=RELEASE \
@@ -126,33 +133,36 @@ RUN cmake -D CMAKE_BUILD_TYPE=RELEASE \
 -D PYTHON_EXECUTABLE=$(which python3) \
 -D BUILD_opencv_python3=ON \
 -D BUILD_opencv_python2=OFF \
+-D BUILD_SHARED_LIBS=OFF \
 -D BUILD_PYTHON_SUPPORT=ON \
 -D BUILD_NEW_PYTHON_SUPPORT=ON \
 -D CMAKE_INSTALL_PREFIX="$HOME/.local" \
 -D PYTHON3_EXECUTABLE=$(which python3) \
 -D PYTHON3_INCLUDE_DIR=$(python3 -c "from distutils.sysconfig import get_python_inc; print(get_python_inc())") \
--D PYTHON3_PACKAGES_PATH=$(python3 -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())") \
+-D PYTHON3_PACKAGES_PATH="$(python3 -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())"") \
 -D PYTHON_INCLUDE_DIR2=$(python3 -c "from os.path import dirname; from distutils.sysconfig import get_config_h_filename; print(dirname(get_config_h_filename()))") \
 -D PYTHON_LIBRARY=$(python3 -c "from distutils.sysconfig import get_config_var;from os.path import dirname,join ; print(join(dirname(get_config_var('LIBPC')),get_config_var('LDLIBRARY')))") \
 -D PYTHON3_NUMPY_INCLUDE_DIRS=$(python3 -c "import numpy; print(numpy.get_include())") \
--D PYTHON3_PACKAGES_PATH=$(python3 -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())") \
+-D OPENCV_PYTHON3_INSTALL_PATH="/home/tstreamer/.local/lib/python3.8/site-packages" \
 -D OPENCV_EXTRA_MODULES_PATH=/home/tstreamer/opencv/build/opencv_contrib-4.5.1/modules \
 -D WITH_GSTREAMER=ON \
 -D WITH_CUDA=ON \
 -D WITH_FFMPEG=ON \
+-D OPENCV_FFMPEG_SKIP_BUILD_CHECK=ON \
 -D WITH_V4L=ON \
 -D WITH_GTK=OFF \
 -D WITH_OPENCL=OFF \
 -D WITH_CUDNN=ON \
 -D OPENCV_DNN_CUDA=ON \
--D BUILD_EXAMPLES=ON .. \
+-D CUDA_ARCH_BIN=61 \
+-D BUILD_EXAMPLES=OFF .. \
 && make -j$(nproc) \
 && make install
 USER root
 RUN ldconfig
 
-FROM gsopencv as final
-COPY --from=gstreamer /home/tstreamer/.local /home/tstreamer/.local
+FROM deps as final
+COPY --from=gsopencv /home/tstreamer/.local /home/tstreamer/.local
 
 USER tstreamer
 WORKDIR /home/tstreamer
