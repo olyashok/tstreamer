@@ -12,7 +12,7 @@ import grpc
 import numpy as np
 import pandas as pd
 import requests
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 import streamlit as st
 
@@ -100,7 +100,7 @@ def draw_box(
     """
 
     line_width = 3
-    font_height = 8
+    
     y_min, x_min, y_max, x_max = box
     (left, right, top, bottom) = (
         x_min * img_width,
@@ -114,8 +114,10 @@ def draw_box(
         fill=color,
     )
     if text:
+        fnt = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf", 12)
+        font_width, font_height = fnt.getsize(text)
         draw.text(
-            (left + line_width, abs(top - line_width - font_height)), text, fill=color
+            (left + line_width, abs(top - line_width - font_height)), text, font=fnt, fill=color
         )
 
 
@@ -142,12 +144,14 @@ data_placeholder = col2.empty()
 model="fastrcnn"
 
 if stream is not None:
-    video = cv2.VideoCapture(f"rtspsrc location={stream} ! decodebin ! videoconvert ! appsink max-buffers=1 drop=true")
+    video = cv2.VideoCapture(f"rtspsrc location={stream} ! rtph264depay ! h264parse ! nvh264dec ! videoconvert ! appsink max-buffers=1 drop=true")
     fps = video.get(cv2.CAP_PROP_FPS)
 
 tic = time.perf_counter()
 frameIdProcStart = 0
 frameIdProc = 0
+#video/x-raw,width=1920,height=1080 !
+#video/x-h264,framerate=30/1 !
 
 while True:
     if stream is not None:
