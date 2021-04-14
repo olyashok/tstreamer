@@ -1,7 +1,6 @@
 # base ----------------------------------------
 Cython
 numpy
-Pillow
 scipy
 gputil
 grpcio
@@ -11,3 +10,4 @@ streamlit
 meson
 pycairo
 PyGObject
+pytesseract

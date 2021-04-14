@@ -2,8 +2,8 @@
 
 cd /mnt/nas_downloads/data/gstest
 
-rm /mnt/nas_downloads/data/gstest/playlist.m3u8
-rm /mnt/nas_downloads/data/gstest/*.ts
+rm -rf /mnt/nas_downloads/data/gstest/playlist.m3u8
+rm -rf /mnt/nas_downloads/data/gstest/*.ts
 
 gst-launch-1.0 -e \
 videomixer name=mix \

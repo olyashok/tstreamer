@@ -165,6 +165,10 @@ FROM deps as final
 COPY --from=gsopencv /home/tstreamer/.local /home/tstreamer/.local
 
 USER tstreamer
+RUN pip uninstall -y pillow && CC="cc -mavx2" && pip install -U --force-reinstall pillow-simd
+RUN python3 -c "from PIL import features; print(features.check_feature('libjpeg_turbo'))"
+
+USER tstreamer
 WORKDIR /home/tstreamer
 ENTRYPOINT ["/usr/local/bin/dockerd-entrypoint.sh"]
 CMD ["ls"]
