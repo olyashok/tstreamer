@@ -621,8 +621,11 @@ if __name__ == '__main__':
 
         if args.save_frame:
             frame_save_path = f"{args.directory}/{args.name}_last_frame.jpg"
-            pil_image = Image.fromarray(frame)
-            pil_image.save(frame_save_path)
+            if "rtsp" in args.stream:
+                pil_image = Image.fromarray(frame)
+                pil_image.save(frame_save_path)
+            else:
+                frame.save(frame_save_path)
 
         toc = time.perf_counter()
 
