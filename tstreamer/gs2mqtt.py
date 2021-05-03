@@ -259,8 +259,11 @@ def process_image(client, image, args):
     """Process an image."""
     if args.test_image is not None:
         pil_image = Image.open(args.test_image)
+    elif "JpegImageFile" in f"{type(image)}":
+        pil_image = image
     else:
         pil_image = Image.fromarray(image)
+
     _image_width, _image_height = pil_image.size
     frameuuid = uuid.uuid4().hex
     img_byte_arr = io.BytesIO()
@@ -597,17 +600,22 @@ if __name__ == '__main__':
     while not mqtt_connected:
         time.sleep(0.1)
 
-    video = Video(args.stream)
-
-    logger.info("Video stream created")
+    if "rtsp" in args.stream:
+        video = Video(args.stream)
+        logger.info("Video stream created")
 
     i = 1
     while True:
         # Wait for the next frame
-        if not video.frame_available():
-            continue
+        if "rtsp" in args.stream:
+            if not video.frame_available():
+                continue
 
-        frame = video.frame()
+        if "rtsp" in args.stream:
+            frame = video.frame()
+        else:
+            frame = Image.open(requests.get(args.stream, stream=True).raw)
+
         tic = time.perf_counter()
         process_image(client, frame, args)
 

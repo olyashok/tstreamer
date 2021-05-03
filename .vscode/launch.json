@@ -12,7 +12,7 @@
             "console": "integratedTerminal",
             "args": [
                 "--name=uvc_g4_pro_946e",
-                "--stream=rtsp://192.168.10.1:7447/ySci8n2TNfOncXMb",
+                "--stream=http://192.168.10.185/snap.jpeg",
                 "--torchserve-ip=192.168.10.23",
                 //"--test-image=/mnt/nas_downloads/data/unifitest/torchserve_uvc_g4_pro_946e_2021-03-05_12-29-54_nobox.jpg",
                 "--directory=/mnt/nas_downloads/data/hassio/tstreamer_dev",
