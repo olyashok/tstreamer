@@ -11,3 +11,5 @@ meson
 pycairo
 PyGObject
 pytesseract
+scikit-image
+imutils

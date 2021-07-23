@@ -1,10 +1,11 @@
 #!/usr/bin/python3
 from __future__ import annotations
+from skimage.metrics import structural_similarity as compare_ssim
 from PIL import Image, ImageDraw
-from shutil import copyfile
 import argparse
 import io
 import cv2
+from shutil import copyfile
 import numpy as np
 import time
 import datetime
@@ -20,6 +21,8 @@ gi.require_version('Gst', '1.0')
 from gi.repository import Gst
 import paho.mqtt.client as mqttClient
 import pytesseract
+import os.path
+import os
 
 class Video():
     def __init__(self, stream):
@@ -114,6 +117,7 @@ DATA_BOX = "bounding_box"
 DATA_BOX_AREA = "box_area"
 DATA_CENTROID = "centroid"
 DATA_PREDICTION_TYPE = "prediction_type"
+DATA_SIMILARITY_TO_LAST = "similarity"
 DATA_PREDICTION_TYPE_OBJECT = "object"
 DATA_PREDICTION_TYPE_CLASS = "class"
 DATA_HEIGHT = "height"
@@ -168,7 +172,8 @@ def get_objects(cropid: str, predictions: list, model: str, img_width: int, img_
                     DATA_MODEL: model,
                     DATA_PREDICTION_TYPE: DATA_PREDICTION_TYPE_CLASS,
                     DATA_UNIQUE_ID: uuid.uuid4().hex,
-                    DATA_PARENT_ID: cropid
+                    DATA_PARENT_ID: cropid,
+                    DATA_SIMILARITY_TO_LAST: -1
                 }
             )
     else:
@@ -204,7 +209,8 @@ def get_objects(cropid: str, predictions: list, model: str, img_width: int, img_
                     DATA_CONFIDENCE: confidence,
                     DATA_PREDICTION_TYPE: DATA_PREDICTION_TYPE_OBJECT,
                     DATA_UNIQUE_ID: uuid.uuid4().hex,
-                    DATA_PARENT_ID: cropid
+                    DATA_PARENT_ID: cropid,
+                    DATA_SIMILARITY_TO_LAST: -1
                 }
             )
     return objects
@@ -274,7 +280,7 @@ def process_image(client, image, args):
     _objects = []  # The parsed raw data
     _targets_found = []
 
-    _models = ['> | fastrcnn | {"person": ">", "car,truck,bus": "car", "dog,cat,bear,teddy bear,sheep,cow": "animal", "*": "null"} | (\"946e\" not in args.name or obj[\"centroid\"][\"y\"]>0.46) and (obj[\"confidence\"]>76) and (\"car\" not in obj[\"name\"] or obj[\"box_area\"]>0.01)',
+    _models = ['> | yolov5x-1280 | {"person": ">", "boat": ">", "car,truck,bus": "car", "dog,cat,bear,teddy bear,sheep,cow": "animal", "*": "null"} | (\"pro_c\" not in args.name or (obj[\"centroid\"][\"y\"]>.15 and obj[\"centroid\"][\"y\"]<1 and obj[\"centroid\"][\"x\"]>0.2 and obj[\"centroid\"][\"x\"]<.7)) and (obj[\"confidence\"]>60) and (\"car\" not in obj[\"name\"] or obj[\"box_area\"]>0.001)',
                'person,car,animal | unifiprotect | {"object,package": "null", "*": ">"} | *']
 
     if (args.read_time):
@@ -417,16 +423,20 @@ def fire_events(client, args, img, objects, stamp, frameuuid):
             obj[DATA_GRAND_PARENT_ID] = obj_by_uuid[obj[DATA_PARENT_ID]][DATA_PARENT_ID]
 
     for obj in objects:
-        prefix = f"{args.name.lower()}"
-        directory = args.directory
-        crop_save_path = f"{directory}/{prefix}_{stamp}_{obj[DATA_MODEL]}_{obj[DATA_PREDICTION_TYPE]}_{obj[DATA_NAME]}_{obj[DATA_UNIQUE_ID]}.jpg"
-        timestamp_save_path = f"{directory}/{prefix}_{stamp}_nobox_{frameuuid}.jpg"
-        obj[DATA_FILE_PATH] = crop_save_path
-        obj[DATA_ENTITY_ID] = args.name
-        obj[DATA_FILE_PATH_FRAME] = timestamp_save_path
-        message = json.dumps(obj)
-        logger.debug(f"{message} sent to topic {args.mqtt_topic}")
-        client.publish(args.mqtt_topic, message)
+        if args.detect_dups > 0 and obj[DATA_SIMILARITY_TO_LAST] < args.detect_dups:
+            prefix = f"{args.name.lower()}"
+            directory = args.directory
+            crop_save_path = f"{directory}/{prefix}_{stamp}_{obj[DATA_MODEL]}_{obj[DATA_PREDICTION_TYPE]}_{obj[DATA_NAME]}_{obj[DATA_UNIQUE_ID]}.jpg"
+            timestamp_save_path = f"{directory}/{prefix}_{stamp}_nobox_{frameuuid}.jpg"
+            obj[DATA_FILE_PATH] = crop_save_path
+            obj[DATA_ENTITY_ID] = args.name
+            obj[DATA_FILE_PATH_FRAME] = timestamp_save_path
+
+            message = json.dumps(obj)
+            logger.debug(f"Sending to topic {args.mqtt_topic} message {message}")
+            client.publish(args.mqtt_topic, message, 1)
+        else:
+            logger.debug(f"Skipping duplicate for similarity of {obj[DATA_SIMILARITY_TO_LAST]}")
 
 
 def save_image(args, img, objects, stamp, frameuuid):
@@ -438,12 +448,15 @@ def save_image(args, img, objects, stamp, frameuuid):
         draw = ImageDraw.Draw(img)
 
     saved_crops = {}
+    saved_crops_pil = {}
     prefix = f"{args.name.lower()}"
     directory = args.directory
 
     obj_by_puuid = {}
     for obj in objects:
         obj_by_puuid[obj[DATA_PARENT_ID]] = obj
+
+    savebox = False
 
     for obj in objects:
         label = obj[DATA_NAME]
@@ -456,6 +469,60 @@ def save_image(args, img, objects, stamp, frameuuid):
         predid = obj[DATA_UNIQUE_ID]
         imageid = obj[DATA_PARENT_ID]
         entity_id = prefix
+
+        crop_save_path = f"{directory}/{prefix}_{stamp}_{model}_{prediction_type}_{label}_{predid}.jpg"
+        crop_save_path_latest = f"{directory}/{prefix}_latest_{prediction_type}_{label}.jpg"
+        box_save_path = f"{directory}/{prefix}_{stamp}_box_{frameuuid}.jpg"
+        box_save_path_latest = (f"{directory}/{prefix}_latest_box.jpg")
+        nobox_save_path = f"{directory}/{prefix}_{stamp}_nobox_{frameuuid}.jpg"
+        nobox_save_path_latest = (f"{directory}/{prefix}_latest_nobox.jpg")
+
+        if args.save_crops:
+            if prediction_type == DATA_PREDICTION_TYPE_OBJECT:
+                imc = imgc.crop((box[DATA_XMIN] * img.width, box[DATA_YMIN] * img.height, box[DATA_XMAX] * img.width, box[DATA_YMAX] * img.height))
+                obj[DATA_FILE_PATH] = f"{crop_save_path}"
+                saved_crops_pil[predid] = imc
+                saved_crops[predid] = obj[DATA_FILE_PATH]
+            else:
+                imc = saved_crops_pil[imageid]
+                obj[DATA_FILE_PATH] = saved_crops[imageid]
+
+        if args.detect_dups > 0:
+            latest_save_path = f"{directory}/{prefix}_latest_{obj[DATA_PREDICTION_TYPE]}_{obj[DATA_NAME]}.jpg"
+            if os.path.exists(latest_save_path):
+                current_im = cv2.cvtColor(np.asarray(imc),cv2.COLOR_RGB2BGR)
+                #grayA = cv2.cvtColor(np.float32(imc), cv2.COLOR_RGB2GRAY)
+                last_im = cv2.imread(latest_save_path)
+                if current_im.shape[0] != last_im.shape[0] or current_im.shape[1] != last_im.shape[1]:
+                    last_im = cv2.resize(last_im, (current_im.shape[1], current_im.shape[0]), interpolation = cv2.INTER_AREA)
+
+                #grayA = cv2.cvtColor(current_im, cv2.COLOR_RGB2GRAY)
+                #grayB = cv2.cvtColor(last_im, cv2.COLOR_BGR2GRAY)
+                #(score, diff) = compare_ssim(grayA, grayB, full=True)
+
+                #histogramA = cv2.calcHist([current_im], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
+                #histogramB = cv2.calcHist([last_im], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
+                #score = cv2.compareHist(histogramA, histogramB, cv2.HISTCMP_CORREL)
+
+                surf = cv2.ORB_create()
+                kpA, desc_a = surf.detectAndCompute(current_im, None)
+                kpB, desc_b = surf.detectAndCompute(last_im, None)
+                bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+                matches = bf.match(desc_a, desc_b)
+                similar_regions = [i for i in matches if i.distance < 70]
+                if len(matches) == 0:
+                    score = 0
+                else:
+                    score = len(similar_regions) / len(matches)
+
+                obj[DATA_SIMILARITY_TO_LAST] = score
+
+                if score*100 >= args.detect_dups:
+                    continue
+
+                logger.debug(f"New image identified with score {score} in {crop_save_path}")
+
+        savebox = True
 
         if args.save_labels:
             label_path = f"{directory}/labels.csv"
@@ -475,20 +542,17 @@ def save_image(args, img, objects, stamp, frameuuid):
 
         if args.save_crops:
             if prediction_type == DATA_PREDICTION_TYPE_OBJECT:
-                imc = imgc.crop((box[DATA_XMIN] * img.width, box[DATA_YMIN] * img.height, box[DATA_XMAX] * img.width, box[DATA_YMAX] * img.height))
                 if args.save_timestamped:
-                    crop_save_path = f"{directory}/{prefix}_{stamp}_{model}_{prediction_type}_{label}_{predid}.jpg"
                     imc.save(crop_save_path)
-                    obj[DATA_FILE_PATH] = f"{crop_save_path}"
-                    saved_crops[predid] = obj[DATA_FILE_PATH]
                 if args.save_latest:
-                    crop_save_path = f"{directory}/{prefix}_latest_{prediction_type}_{label}.jpg"
-                    imc.save(crop_save_path)
+                    imc.save(crop_save_path_latest)
                 #_LOGGER.debug("Torchserve saved crops")
             else:
                 obj[DATA_FILE_PATH] = saved_crops[imageid]
-                classified_crop_path = f"{directory}/{prefix}_{stamp}_{model}_{prediction_type}_{label}_{predid}.jpg"
-                copyfile(obj[DATA_FILE_PATH], classified_crop_path)
+                if args.save_timestamped:
+                    copyfile(obj[DATA_FILE_PATH], crop_save_path)
+                if args.save_latest:
+                    copyfile(obj[DATA_FILE_PATH], crop_save_path_latest)
 
         if args.show_boxes and prediction_type == DATA_PREDICTION_TYPE_OBJECT:
             box_colour = (255, 255, 0)
@@ -514,22 +578,16 @@ def save_image(args, img, objects, stamp, frameuuid):
                 fill=box_colour,
             )
 
-    if len(objects) > 0:
-        suffix = f""
-
+    if len(objects) > 0 and savebox:
         if args.save_latest:
             if args.show_boxes:
-                latest_save_path = (f"{directory}/{prefix}_latest_box{suffix}.jpg")
-                img.save(latest_save_path)
-            latest_save_path = f"{directory}/{prefix}_latest_nobox{suffix}.jpg"
-            imgc.save(latest_save_path)
+                img.save(box_save_path_latest)
+            imgc.save(nobox_save_path_latest)
 
         if args.save_timestamped:
             if args.show_boxes:
-                timestamp_save_path = f"{directory}/{prefix}_{stamp}_box{suffix}_{frameuuid}.jpg"
-                img.save(timestamp_save_path)
-            timestamp_save_path = f"{directory}/{prefix}_{stamp}_nobox{suffix}_{frameuuid}.jpg"
-            imgc.save(timestamp_save_path)
+                img.save(box_save_path)
+            imgc.save(nobox_save_path)
         #_LOGGER.debug("Torchserve saved uncropped images")
 
 
@@ -564,6 +622,7 @@ if __name__ == '__main__':
     parser.add_argument('--save-timestamped', type=boolean_string, default=True, help='save timestamped (default:False)')
     parser.add_argument('--save-crops', type=boolean_string, default=False, help='save crops (default:False)')
     parser.add_argument('--save-latest', type=boolean_string, default=False, help='save latest version (default:False)')
+    parser.add_argument('--detect-dups', type=int, default='0', metavar='U', help='0-100 dups threshold')
     parser.add_argument('--save-labels', type=boolean_string, default=False, help='save labels (default:False)')
     parser.add_argument('--save-frame', type=boolean_string, default=False, help='save last frame (default:False)')
     parser.add_argument('--show-boxes', type=boolean_string, default=False, help='show boxes (default:False)')
