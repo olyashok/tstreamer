@@ -213,7 +213,8 @@ def get_objects(cropid: str, predictions: list, model: str, img_width: int, img_
                     DATA_SIMILARITY_TO_LAST: -1
                 }
             )
-    return objects
+
+    return sorted(objects, key=lambda i: i['bounding_box']['x_min'])
 
 
 def infer_via_rest(host, port, model_name, model_input):
@@ -280,11 +281,15 @@ def process_image(client, image, args):
     _objects = []  # The parsed raw data
     _targets_found = []
 
-    _models = ['> | yolov5x-1280 | {"person": ">", "boat": ">", "car,truck,bus": "car", "dog,cat,bear,teddy bear,sheep,cow": "animal", "*": "null"} | (\"pro_c\" not in args.name or (obj[\"centroid\"][\"y\"]>.15 and obj[\"centroid\"][\"y\"]<1 and obj[\"centroid\"][\"x\"]>0.2 and obj[\"centroid\"][\"x\"]<.7)) and (obj[\"confidence\"]>60) and (\"car\" not in obj[\"name\"] or obj[\"box_area\"]>0.001)',
+    _models = ['> | yolov5x-1280 | {"person": ">", "boat": ">", "car,truck,bus": "car", "dog,cat,bear,teddy bear,sheep,cow": "animal", "*": "null"} | ' +
+               '(\"pro_c\" not in args.name or (.2 <= obj[\"centroid\"][\"x\"] <= .78 and .23 <= obj[\"centroid\"][\"y\"] <= 1 and not (.53 <= obj[\"centroid\"][\"x\"] <= .59 and .23 <= obj[\"centroid\"][\"y\"] <= .33))) and '+ #dock area only and not boat lift
+               '(\"pro_a\" not in args.name or not (.48 <= obj[\"centroid\"][\"x\"] <= 1 and 0 <= obj[\"centroid\"][\"y\"] <= .47)) and '+ #exclude circle in driveway
+               '(\"doorbell\" not in args.name or obj[\"box_area\"]>0.01) and '+ #exclude circle in driveway
+               '(obj[\"box_area\"]>0.001)', # no small objects
                'person,car,animal | unifiprotect | {"object,package": "null", "*": ">"} | *']
 
     if (args.read_time):
-        time_crop = pil_image.crop((0, 0, 0.17 * _image_width, 0.037 * _image_height))
+        time_crop = pil_image.crop((0, 0, 0.22 * _image_width, 0.037 * _image_height))
         #time_crop.save(f"{args.directory}/t.jpeg", format='JPEG', quality=99)
         frame_timestamp = pytesseract.image_to_string(time_crop)
         if (len(frame_timestamp)<10):
@@ -423,7 +428,7 @@ def fire_events(client, args, img, objects, stamp, frameuuid):
             obj[DATA_GRAND_PARENT_ID] = obj_by_uuid[obj[DATA_PARENT_ID]][DATA_PARENT_ID]
 
     for obj in objects:
-        if args.detect_dups > 0 and obj[DATA_SIMILARITY_TO_LAST] < args.detect_dups:
+        if args.detect_dups > 0 and obj[DATA_SIMILARITY_TO_LAST] < (args.detect_dups/100):
             prefix = f"{args.name.lower()}"
             directory = args.directory
             crop_save_path = f"{directory}/{prefix}_{stamp}_{obj[DATA_MODEL]}_{obj[DATA_PREDICTION_TYPE]}_{obj[DATA_NAME]}_{obj[DATA_UNIQUE_ID]}.jpg"
@@ -458,8 +463,14 @@ def save_image(args, img, objects, stamp, frameuuid):
 
     savebox = False
 
+    counter = {}
+
     for obj in objects:
+        inc = 0
         label = obj[DATA_NAME]
+        if label in counter:
+            inc = counter[label] + 1
+        counter[label] = inc
         confidence = obj[DATA_CONFIDENCE]
         model = obj[DATA_MODEL]
         prediction_type = obj[DATA_PREDICTION_TYPE]
@@ -471,7 +482,7 @@ def save_image(args, img, objects, stamp, frameuuid):
         entity_id = prefix
 
         crop_save_path = f"{directory}/{prefix}_{stamp}_{model}_{prediction_type}_{label}_{predid}.jpg"
-        crop_save_path_latest = f"{directory}/{prefix}_latest_{prediction_type}_{label}.jpg"
+        crop_save_path_latest = f"{directory}/{prefix}_latest_{prediction_type}_{label}_{inc}.jpg"
         box_save_path = f"{directory}/{prefix}_{stamp}_box_{frameuuid}.jpg"
         box_save_path_latest = (f"{directory}/{prefix}_latest_box.jpg")
         nobox_save_path = f"{directory}/{prefix}_{stamp}_nobox_{frameuuid}.jpg"
@@ -488,11 +499,10 @@ def save_image(args, img, objects, stamp, frameuuid):
                 obj[DATA_FILE_PATH] = saved_crops[imageid]
 
         if args.detect_dups > 0:
-            latest_save_path = f"{directory}/{prefix}_latest_{obj[DATA_PREDICTION_TYPE]}_{obj[DATA_NAME]}.jpg"
-            if os.path.exists(latest_save_path):
+            if os.path.exists(crop_save_path_latest):
                 current_im = cv2.cvtColor(np.asarray(imc),cv2.COLOR_RGB2BGR)
                 #grayA = cv2.cvtColor(np.float32(imc), cv2.COLOR_RGB2GRAY)
-                last_im = cv2.imread(latest_save_path)
+                last_im = cv2.imread(crop_save_path_latest)
                 if current_im.shape[0] != last_im.shape[0] or current_im.shape[1] != last_im.shape[1]:
                     last_im = cv2.resize(last_im, (current_im.shape[1], current_im.shape[0]), interpolation = cv2.INTER_AREA)
 
@@ -527,13 +537,14 @@ def save_image(args, img, objects, stamp, frameuuid):
         if args.save_labels:
             label_path = f"{directory}/labels.csv"
             with open(label_path, "a+") as f:
-                f.write("{},{},{},{},{},{},{},{},{},{},{},{}\n".format(
+                f.write("{},{},{},{},{},{},{},{},{},{},{},{},{}\n".format(
                     stamp,
                     predid,
                     imageid,
                     entity_id,
                     model,
                     confidence,
+                    obj[DATA_SIMILARITY_TO_LAST],
                     label,
                     box_area,
                     int(box[DATA_XMIN] * img.width), int(box[DATA_YMIN] * img.height), int(box[DATA_XMAX] * img.width), int(box[DATA_YMAX] * img.height),

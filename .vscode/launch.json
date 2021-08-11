@@ -28,6 +28,13 @@
                 "--mqtt-password=SnetBil8a",
                 "--debug=DEBUG"
                 ],
+        },
+        {
+            "name": "Python: compare",
+            "type": "python",
+            "request": "launch",
+            "program": "/mnt/nas_downloads/deepstack/tstreamer/tstreamer/compare.py",
+            "console": "integratedTerminal",
         }
     ]
 }
