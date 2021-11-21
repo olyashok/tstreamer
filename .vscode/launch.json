@@ -4,15 +4,18 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+
+
+
         {
-            "name": "Python: GS2MQTT",
+            "name": "Python: GS2MQTT dock",
             "type": "python",
             "request": "launch",
             "program": "/mnt/nas_downloads/deepstack/tstreamer/tstreamer/gs2mqtt.py",
             "console": "integratedTerminal",
             "args": [
-                "--name=uvc_g4_pro_946e",
-                "--stream=http://192.168.10.184/snap.jpeg",
+                "--name=uvc_g3_pro_c",
+                "--stream=http://192.168.10.198/snap.jpeg",
                 "--torchserve-ip=192.168.10.23",
                 //"--test-image=/mnt/nas_downloads/data/unifitest/torchserve_uvc_g4_pro_946e_2021-03-05_12-29-54_nobox.jpg",
                 "--directory=/mnt/nas_downloads/data/hassio/tstreamer_dev",
@@ -35,6 +38,26 @@
             "request": "launch",
             "program": "/mnt/nas_downloads/deepstack/tstreamer/tstreamer/compare.py",
             "console": "integratedTerminal",
+        }
+        {
+            "name": "Python: crop",
+            "type": "python",
+            "request": "launch",
+            "program": "/mnt/nas_downloads/deepstack/tstreamer/tstreamer/crop.py",
+            "console": "integratedTerminal",
+            "args": [
+                "fd4ba07a0e904165a4fcb837ff793f2b"
+                ],
+        }
+        {
+            "name": "Python: crop2",
+            "type": "python",
+            "request": "launch",
+            "program": "/mnt/nas_downloads/deepstack/tstreamer/tstreamer/crop2.py",
+            "console": "integratedTerminal",
+            "args": [
+                "fd4ba07a0e904165a4fcb837ff793f2b"
+                ],
         }
     ]
 }

@@ -140,6 +140,7 @@ DATA_GRAND_PARENT_ID = "grand_parent_id"
 DATETIME_FORMAT = "%Y-%m-%d_%H-%M-%S"
 DATA_FILE_PATH = "path"
 DATA_FILE_PATH_FRAME = "path_frame"
+DATA_FILE_PATH_CROP = "path_crop"
 
 def get_objects(cropid: str, predictions: list, model: str, img_width: int, img_height: int):
     """Return objects with formatting and extra info."""
@@ -284,7 +285,12 @@ def process_image(client, image, args):
     _models = ['> | yolov5x-1280 | {"person": ">", "boat": ">", "car,truck,bus": "car", "dog,cat,bear,teddy bear,sheep,cow": "animal", "*": "null"} | ' +
                '(\"pro_c\" not in args.name or (.2 <= obj[\"centroid\"][\"x\"] <= .78 and .23 <= obj[\"centroid\"][\"y\"] <= 1 and not (.53 <= obj[\"centroid\"][\"x\"] <= .59 and .23 <= obj[\"centroid\"][\"y\"] <= .33))) and '+ #dock area only and not boat lift
                '(\"pro_a\" not in args.name or not (.48 <= obj[\"centroid\"][\"x\"] <= 1 and 0 <= obj[\"centroid\"][\"y\"] <= .47)) and '+ #exclude circle in driveway
-               '(\"doorbell\" not in args.name or obj[\"box_area\"]>0.01) and '+ #exclude circle in driveway
+               '(\"946\" not in args.name or not (.384 <= obj[\"centroid\"][\"x\"] <= .394 and 0.185 <= obj[\"centroid\"][\"y\"] <= .195)) and '+ #exclude tree
+               '(\"946\" not in args.name or not (.641 <= obj[\"centroid\"][\"x\"] <= .671 and 0.134 <= obj[\"centroid\"][\"y\"] <= .145)) and '+ #exclude weird branch
+               '(\"pro_a\" not in args.name or not (.230 <= obj[\"centroid\"][\"x\"] <= .240 and 0.281 <= obj[\"centroid\"][\"y\"] <= .291)) and '+ #exclude tree
+               '(\"pro_a\" not in args.name or not (.920 <= obj[\"centroid\"][\"x\"] <= .930 and 0.963 <= obj[\"centroid\"][\"y\"] <= .973)) and '+ #exclude rock
+               '(\"pro_b\" not in args.name or \"boat\" not in obj[\"name\"]) and '+ # exclude boats
+               '(\"doorbell\" not in args.name or obj[\"box_area\"]>0.01) and '+
                '(obj[\"box_area\"]>0.001)', # no small objects
                'person,car,animal | unifiprotect | {"object,package": "null", "*": ">"} | *']
 
@@ -295,7 +301,7 @@ def process_image(client, image, args):
         if (len(frame_timestamp)<10):
             frame_timestamp = "UNKNOWN"
         else:
-            frame_timestamp = frame_timestamp[0:19]
+            frame_timestamp = frame_timestamp[0:19].replace("\n", " ").replace("\r", " ").strip()
     else:
         frame_timestamp = "STAMP_DISABLED"
 
@@ -337,8 +343,6 @@ def process_image(client, image, args):
                 if isinstance(response, str) or (isinstance(response, dict) and 'code' in response.keys()):
                     logger.error(f"Torchsever unexpected response {response}")
                     continue
-
-                logger.debug(f"Torchserve {model} on {args.name} on frame {frame_timestamp} ran in {toc-tic}s and returned {response}")
 
                 all_objects = get_objects(cropid, response, model, current_width, current_height)
 
@@ -385,7 +389,8 @@ def process_image(client, image, args):
                 targets_found = filtered
                 targets_found = [obj for obj in targets_found if (obj["confidence"] > args.min_confidence)]
 
-                logger.debug(f"Torchserve {model} on {args.name} on frame {frame_timestamp} ran in {toc-tic}s and was pipelined to {targets_found}")
+                if len(response) > 0:
+                    logger.debug(f"Torchserve {model} on {args.name} on frame {frame_timestamp} ran in {toc-tic}s and returned {response} and was pipelined to {targets_found}")
 
                 #pipe crops
                 if len(targets_found) > 0 and targets_found[0][DATA_PREDICTION_TYPE] != DATA_PREDICTION_TYPE_CLASS:
@@ -409,16 +414,18 @@ def process_image(client, image, args):
 
     detection_time = datetime.datetime.now().strftime(DATETIME_FORMAT)
 
-    logger.debug(f"{len(_targets_found)} targets found on frame {frameuuid} with frame timestamp {frame_timestamp} ")
+    if len(_targets_found) > 0:
+        logger.debug(f"{len(_targets_found)} targets found on frame {frameuuid} with frame timestamp {frame_timestamp} ")
 
-    if len(_targets_found) > 0 and (args.save_timestamped or args.save_latest):
+    if (args.save_timestamped or args.save_latest):
         save_image(args, pil_image, _targets_found, detection_time, frameuuid)
-
+    #logger.debug(f"Post image saves")
     if len(_targets_found) > 0 and args.fire_events:
         fire_events(client, args, pil_image, _targets_found, detection_time, frameuuid)
 
 
 def fire_events(client, args, img, objects, stamp, frameuuid):
+    logger.debug(f"Firing events")
     obj_by_uuid = {}
     for obj in objects:
         obj_by_uuid[obj[DATA_UNIQUE_ID]] = obj
@@ -454,6 +461,8 @@ def save_image(args, img, objects, stamp, frameuuid):
 
     saved_crops = {}
     saved_crops_pil = {}
+    saved_crops_pad = {}
+    saved_crops_pil_pad = {}
     prefix = f"{args.name.lower()}"
     directory = args.directory
 
@@ -464,6 +473,12 @@ def save_image(args, img, objects, stamp, frameuuid):
     savebox = False
 
     counter = {}
+
+    box_save_path_latest = (f"{directory}/{prefix}_latest_box.jpg")
+    all_box_save_path_latest = (f"{directory}/all_latest_box.jpg")
+    nobox_save_path_latest = (f"{directory}/{prefix}_latest_nobox.jpg")
+    all_nobox_save_path_latest = (f"{directory}/all_latest_nobox.jpg")
+    all_latest_crop = (f"{directory}/all_latest_crop.jpg")
 
     for obj in objects:
         inc = 0
@@ -482,90 +497,17 @@ def save_image(args, img, objects, stamp, frameuuid):
         entity_id = prefix
 
         crop_save_path = f"{directory}/{prefix}_{stamp}_{model}_{prediction_type}_{label}_{predid}.jpg"
+        crop_save_path_pad = f"{directory}/{prefix}_{stamp}_{model}_{prediction_type}_{label}_{predid}_pad.jpg"
         crop_save_path_latest = f"{directory}/{prefix}_latest_{prediction_type}_{label}_{inc}.jpg"
+        crop_save_path_latest_pad = f"{directory}/{prefix}_latest_{prediction_type}_crop.jpg"
+        all_crop_save_path_latest_pad = f"{directory}/all_latest_{prediction_type}_crop.jpg"
+        all_crop_save_path_latest = f"{directory}/all_latest_{prediction_type}_{label}_{inc}.jpg"
+        allni_crop_save_path_latest = f"{directory}/all_latest_{prediction_type}_{label}.jpg"
         box_save_path = f"{directory}/{prefix}_{stamp}_box_{frameuuid}.jpg"
-        box_save_path_latest = (f"{directory}/{prefix}_latest_box.jpg")
         nobox_save_path = f"{directory}/{prefix}_{stamp}_nobox_{frameuuid}.jpg"
-        nobox_save_path_latest = (f"{directory}/{prefix}_latest_nobox.jpg")
-
-        if args.save_crops:
-            if prediction_type == DATA_PREDICTION_TYPE_OBJECT:
-                imc = imgc.crop((box[DATA_XMIN] * img.width, box[DATA_YMIN] * img.height, box[DATA_XMAX] * img.width, box[DATA_YMAX] * img.height))
-                obj[DATA_FILE_PATH] = f"{crop_save_path}"
-                saved_crops_pil[predid] = imc
-                saved_crops[predid] = obj[DATA_FILE_PATH]
-            else:
-                imc = saved_crops_pil[imageid]
-                obj[DATA_FILE_PATH] = saved_crops[imageid]
-
-        if args.detect_dups > 0:
-            if os.path.exists(crop_save_path_latest):
-                current_im = cv2.cvtColor(np.asarray(imc),cv2.COLOR_RGB2BGR)
-                #grayA = cv2.cvtColor(np.float32(imc), cv2.COLOR_RGB2GRAY)
-                last_im = cv2.imread(crop_save_path_latest)
-                if current_im.shape[0] != last_im.shape[0] or current_im.shape[1] != last_im.shape[1]:
-                    last_im = cv2.resize(last_im, (current_im.shape[1], current_im.shape[0]), interpolation = cv2.INTER_AREA)
-
-                #grayA = cv2.cvtColor(current_im, cv2.COLOR_RGB2GRAY)
-                #grayB = cv2.cvtColor(last_im, cv2.COLOR_BGR2GRAY)
-                #(score, diff) = compare_ssim(grayA, grayB, full=True)
-
-                #histogramA = cv2.calcHist([current_im], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
-                #histogramB = cv2.calcHist([last_im], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
-                #score = cv2.compareHist(histogramA, histogramB, cv2.HISTCMP_CORREL)
-
-                surf = cv2.ORB_create()
-                kpA, desc_a = surf.detectAndCompute(current_im, None)
-                kpB, desc_b = surf.detectAndCompute(last_im, None)
-                bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-                matches = bf.match(desc_a, desc_b)
-                similar_regions = [i for i in matches if i.distance < 70]
-                if len(matches) == 0:
-                    score = 0
-                else:
-                    score = len(similar_regions) / len(matches)
-
-                obj[DATA_SIMILARITY_TO_LAST] = score
-
-                if score*100 >= args.detect_dups:
-                    continue
-
-                logger.debug(f"New image identified with score {score} in {crop_save_path}")
-
-        savebox = True
-
-        if args.save_labels:
-            label_path = f"{directory}/labels.csv"
-            with open(label_path, "a+") as f:
-                f.write("{},{},{},{},{},{},{},{},{},{},{},{},{}\n".format(
-                    stamp,
-                    predid,
-                    imageid,
-                    entity_id,
-                    model,
-                    confidence,
-                    obj[DATA_SIMILARITY_TO_LAST],
-                    label,
-                    box_area,
-                    int(box[DATA_XMIN] * img.width), int(box[DATA_YMIN] * img.height), int(box[DATA_XMAX] * img.width), int(box[DATA_YMAX] * img.height),
-                ))
-            #_LOGGER.debug("Torchserve saved labels")
-
-        if args.save_crops:
-            if prediction_type == DATA_PREDICTION_TYPE_OBJECT:
-                if args.save_timestamped:
-                    imc.save(crop_save_path)
-                if args.save_latest:
-                    imc.save(crop_save_path_latest)
-                #_LOGGER.debug("Torchserve saved crops")
-            else:
-                obj[DATA_FILE_PATH] = saved_crops[imageid]
-                if args.save_timestamped:
-                    copyfile(obj[DATA_FILE_PATH], crop_save_path)
-                if args.save_latest:
-                    copyfile(obj[DATA_FILE_PATH], crop_save_path_latest)
 
         if args.show_boxes and prediction_type == DATA_PREDICTION_TYPE_OBJECT:
+            logger.debug(f"Drawing boxes")
             box_colour = (255, 255, 0)
 
             box_label = f"{model}.{label}: {confidence:.1f}%"
@@ -589,13 +531,144 @@ def save_image(args, img, objects, stamp, frameuuid):
                 fill=box_colour,
             )
 
-    if len(objects) > 0 and savebox:
-        if args.save_latest:
-            if args.show_boxes:
-                img.save(box_save_path_latest)
-            imgc.save(nobox_save_path_latest)
+        if args.save_crops:
+            if prediction_type == DATA_PREDICTION_TYPE_OBJECT:
+                imc = imgc.crop((box[DATA_XMIN] * img.width, box[DATA_YMIN] * img.height, box[DATA_XMAX] * img.width, box[DATA_YMAX] * img.height))
 
-        if args.save_timestamped:
+                wmw=368
+                wmh=368
+                ratio = wmw/wmh
+                pad = 1.5
+                w, h = img.width, img.height
+                x1, y1, x2, y2 = w*box[DATA_XMIN], h*box[DATA_YMIN], w*box[DATA_XMAX], h*box[DATA_YMAX]
+                cw = x2 - x1
+                ch = y2 - y1
+                ccx = x1 + cw/2
+                ccy = y1 + ch/2
+                ecw = cw*pad
+                ech = ch*pad
+                if ecw>=ech:
+                    ech = ecw*ratio
+                else:
+                    ecw = ech*ratio
+                eccx = ccx
+                eccy = ccy
+                if (eccx<ecw/2): eccx = ecw/2
+                if (eccx>(w-ecw/2)): eccx = w-ecw/2
+                if (eccy<ech/2): eccy = ech/2
+                if (eccy>(h-ech/2)): eccy = h-ech/2
+                x1 = max(0,eccx-ecw/2)
+                y1 = max(0,eccy-ech/2)
+                x2 = min(eccx+ecw/2,w)
+                y2 = min(eccy+ech/2,h)
+                imcp = img.crop((x1, y1, x2, y2))
+
+                saved_crops_pil[predid] = imc
+                saved_crops_pil_pad[predid] = imcp
+                obj[DATA_FILE_PATH] = f"{crop_save_path}"
+                obj[DATA_FILE_PATH_CROP] = f"{crop_save_path_pad}"
+                saved_crops[predid] = obj[DATA_FILE_PATH]
+                saved_crops_pad[predid] = obj[DATA_FILE_PATH_CROP]
+            else:
+                imc = saved_crops_pil[imageid]
+                imcp = saved_crops_pil_pad[imageid]
+                obj[DATA_FILE_PATH] = saved_crops[imageid]
+                obj[DATA_FILE_PATH_CROP] = saved_crops_pad[imageid]
+
+        if args.detect_dups > 0:
+            if os.path.exists(crop_save_path_latest):
+                score = -2
+                try:
+                    current_im = cv2.cvtColor(np.asarray(imc),cv2.COLOR_RGB2BGR)
+                    #grayA = cv2.cvtColor(np.float32(imc), cv2.COLOR_RGB2GRAY)
+                    last_im = cv2.imread(crop_save_path_latest)
+                    if current_im.shape[0] != last_im.shape[0] or current_im.shape[1] != last_im.shape[1]:
+                        last_im = cv2.resize(last_im, (current_im.shape[1], current_im.shape[0]), interpolation = cv2.INTER_AREA)
+
+                    #grayA = cv2.cvtColor(current_im, cv2.COLOR_RGB2GRAY)
+                    #grayB = cv2.cvtColor(last_im, cv2.COLOR_BGR2GRAY)
+                    #(score, diff) = compare_ssim(grayA, grayB, full=True)
+
+                    #histogramA = cv2.calcHist([current_im], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
+                    #histogramB = cv2.calcHist([last_im], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
+                    #score = cv2.compareHist(histogramA, histogramB, cv2.HISTCMP_CORREL)
+
+                    surf = cv2.ORB_create()
+                    kpA, desc_a = surf.detectAndCompute(current_im, None)
+                    kpB, desc_b = surf.detectAndCompute(last_im, None)
+                    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+                    matches = bf.match(desc_a, desc_b)
+                    similar_regions = [i for i in matches if i.distance < 70]
+                    if len(matches) != 0:
+                        score = len(similar_regions) / len(matches)
+                except cv2.error as err:
+                    logger.warning(f"Unexpected CV2 error. Skipping similarity check. Err={err}")
+
+                obj[DATA_SIMILARITY_TO_LAST] = score
+
+                if score*100 >= args.detect_dups:
+                    saved_crops[predid] = crop_save_path_latest
+                    continue
+
+                logger.debug(f"New image identified with score {score} in {crop_save_path}")
+
+        savebox = True
+
+        if args.save_labels:
+            logger.debug(f"Saving labels")
+            label_path = f"{directory}/labels.csv"
+            with open(label_path, "a+") as f:
+                f.write("{},{},{},{},{},{},{},{},{},{},{},{},{}\n".format(
+                    stamp,
+                    predid,
+                    imageid,
+                    entity_id,
+                    model,
+                    confidence,
+                    obj[DATA_SIMILARITY_TO_LAST],
+                    label,
+                    box_area,
+                    int(box[DATA_XMIN] * img.width), int(box[DATA_YMIN] * img.height), int(box[DATA_XMAX] * img.width), int(box[DATA_YMAX] * img.height),
+                ))
+
+
+        if args.save_crops:
+            logger.debug(f"Saving crops")
+            if prediction_type == DATA_PREDICTION_TYPE_OBJECT:
+                if args.save_timestamped:
+                    imc.save(crop_save_path)
+                    imc.save(crop_save_path_pad)
+                if args.save_latest:
+                    imc.save(crop_save_path_latest)
+                    imc.save(all_crop_save_path_latest)
+                    imc.save(allni_crop_save_path_latest)
+                    imcp.save(crop_save_path_latest_pad)
+                    imcp.save(all_crop_save_path_latest_pad)
+                    imcp.save(all_latest_crop)
+                #_LOGGER.debug("Torchserve saved crops")
+            else:
+                obj[DATA_FILE_PATH] = saved_crops[imageid]
+                if args.save_timestamped:
+                    copyfile(obj[DATA_FILE_PATH], crop_save_path)
+                    copyfile(obj[DATA_FILE_PATH_CROP], crop_save_path_pad)
+                if args.save_latest:
+                    copyfile(obj[DATA_FILE_PATH], crop_save_path_latest)
+                    copyfile(obj[DATA_FILE_PATH_CROP], crop_save_path_latest)
+                    copyfile(obj[DATA_FILE_PATH_CROP], all_crop_save_path_latest_pad)
+                    copyfile(obj[DATA_FILE_PATH], all_crop_save_path_latest)
+                    copyfile(obj[DATA_FILE_PATH], allni_crop_save_path_latest)
+
+
+
+    if args.save_latest:
+        if args.show_boxes:
+            img.save(box_save_path_latest)
+            img.save(all_box_save_path_latest)
+        imgc.save(nobox_save_path_latest)
+        imgc.save(all_nobox_save_path_latest)
+
+    if savebox:
+        if len(objects) > 0 and args.save_timestamped:
             if args.show_boxes:
                 img.save(box_save_path)
             imgc.save(nobox_save_path)
@@ -687,7 +760,14 @@ if __name__ == '__main__':
             frame = Image.open(requests.get(args.stream, stream=True).raw)
 
         tic = time.perf_counter()
-        process_image(client, frame, args)
+        try:
+            process_image(client, frame, args)
+        except OSError as err:
+            logger.debug(f"OS error {err}")
+            raise
+        except:
+            logger.debug(f"Unexpected error {sys.exc_info()}")
+            raise
 
         if args.save_frame:
             frame_save_path = f"{args.directory}/{args.name}_last_frame.jpg"
@@ -699,7 +779,7 @@ if __name__ == '__main__':
 
         toc = time.perf_counter()
 
-        logger.debug(f"Processed frame {i} on {args.name} in {toc-tic}s")
+        #logger.debug(f"Processed frame {i} on {args.name} in {toc-tic}s")
 
         i = i + 1
 
