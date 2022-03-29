@@ -14,10 +14,10 @@ class S(BaseHTTPRequestHandler):
     def refresh_labels(self):
         print(f"Loading labels")
         labels = "/mnt/nas_downloads/data/hassio/tstreamer/labels.csv"
-        self.df = pd.read_csv(labels)
+        self.df = pd.read_csv(labels, header=0)
         self.df.columns = ['stamp', 'uuid', 'puuid', 'entity', 'model', 'confidence', 'similarity', 'label', 'area', 'x1', 'y1', 'x2', 'y2']
         self.df['gpuuid'] = self.df['puuid'].map(self.df.set_index('uuid')['puuid'])
-        print(f"Labels loaded")
+        print(f"Labels loaded: {self.df.size}")
 
     def __init__(self, http_svc, *args, **kwargs):
         self.refresh_labels()
@@ -61,6 +61,7 @@ class S(BaseHTTPRequestHandler):
         y2 = min(eccy+ech/2,h)
         args = f"bgcolor=black&width={wmw}&height={wmh}&crop={x1},{y1},{x2},{y2}"
         url=f"http://192.168.10.23:39876/ha/tstreamer/{filename}?{args}"
+        print(f"{url}")
         response = requests.get(url)
 
         return response.content

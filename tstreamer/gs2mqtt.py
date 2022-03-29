@@ -1,14 +1,14 @@
 #!/usr/bin/python3
 from __future__ import annotations
 from skimage.metrics import structural_similarity as compare_ssim
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import argparse
 import io
 import cv2
 from shutil import copyfile
 import numpy as np
 import time
-import datetime
+from datetime import datetime, tzinfo, timedelta
 import json
 import uuid
 import sys
@@ -23,6 +23,21 @@ import paho.mqtt.client as mqttClient
 import pytesseract
 import os.path
 import os
+
+class Zone(tzinfo):
+    def __init__(self,offset,isdst,name):
+        self.offset = offset
+        self.isdst = isdst
+        self.name = name
+    def utcoffset(self, dt):
+        return timedelta(hours=self.offset) + self.dst(dt)
+    def dst(self, dt):
+            return timedelta(hours=1) if self.isdst else timedelta(0)
+    def tzname(self,dt):
+         return self.name
+
+GMT = Zone(0,False,'GMT')
+EST = Zone(-5,False,'EST')
 
 class Video():
     def __init__(self, stream):
@@ -284,13 +299,16 @@ def process_image(client, image, args):
 
     _models = ['> | yolov5x-1280 | {"person": ">", "boat": ">", "car,truck,bus": "car", "dog,cat,bear,teddy bear,sheep,cow": "animal", "*": "null"} | ' +
                '(\"pro_c\" not in args.name or (.2 <= obj[\"centroid\"][\"x\"] <= .78 and .23 <= obj[\"centroid\"][\"y\"] <= 1 and not (.53 <= obj[\"centroid\"][\"x\"] <= .59 and .23 <= obj[\"centroid\"][\"y\"] <= .33))) and '+ #dock area only and not boat lift
-               '(\"pro_a\" not in args.name or not (.48 <= obj[\"centroid\"][\"x\"] <= 1 and 0 <= obj[\"centroid\"][\"y\"] <= .47)) and '+ #exclude circle in driveway
                '(\"946\" not in args.name or not (.384 <= obj[\"centroid\"][\"x\"] <= .394 and 0.185 <= obj[\"centroid\"][\"y\"] <= .195)) and '+ #exclude tree
                '(\"946\" not in args.name or not (.641 <= obj[\"centroid\"][\"x\"] <= .671 and 0.134 <= obj[\"centroid\"][\"y\"] <= .145)) and '+ #exclude weird branch
+               '(\"pro_a\" not in args.name or not (.92 <= obj[\"centroid\"][\"y\"])) and '+ #exclude rock
+               '(\"pro_a\" not in args.name or not (.48 <= obj[\"centroid\"][\"x\"] <= 1 and 0 <= obj[\"centroid\"][\"y\"] <= .47)) and '+ #exclude circle in driveway
                '(\"pro_a\" not in args.name or not (.230 <= obj[\"centroid\"][\"x\"] <= .240 and 0.281 <= obj[\"centroid\"][\"y\"] <= .291)) and '+ #exclude tree
-               '(\"pro_a\" not in args.name or not (.920 <= obj[\"centroid\"][\"x\"] <= .930 and 0.963 <= obj[\"centroid\"][\"y\"] <= .973)) and '+ #exclude rock
+               '(\"pro_a\" not in args.name or not (.47 <= obj[\"centroid\"][\"x\"] <= .63 and 0.79 <= obj[\"centroid\"][\"y\"] <= .92)) and '+ #exclude rock
                '(\"pro_b\" not in args.name or \"boat\" not in obj[\"name\"]) and '+ # exclude boats
                '(\"doorbell\" not in args.name or obj[\"box_area\"]>0.01) and '+
+               '(\"doorbell\" not in args.name or not (.71 <= obj[\"centroid\"][\"x\"] <= .81 and 0.29 <= obj[\"centroid\"][\"y\"] <= .73)) and '+ #exclude girland
+               '(\"g4_bullet\" not in args.name or not (.36 <= obj[\"centroid\"][\"x\"] <= .4 and 0.22 <= obj[\"centroid\"][\"y\"] <= .34)) and '+ #exclude chair
                '(obj[\"box_area\"]>0.001)', # no small objects
                'person,car,animal | unifiprotect | {"object,package": "null", "*": ">"} | *']
 
@@ -387,7 +405,9 @@ def process_image(client, image, args):
                     filtered = all_objects
 
                 targets_found = filtered
-                targets_found = [obj for obj in targets_found if (obj["confidence"] > args.min_confidence)]
+                #filter for min confidence (but do not filter classifier)
+                if len(targets_found) > 0 and targets_found[0][DATA_PREDICTION_TYPE] != DATA_PREDICTION_TYPE_CLASS:
+                    targets_found = [obj for obj in targets_found if (obj["confidence"] > args.min_confidence)]
 
                 if len(response) > 0:
                     logger.debug(f"Torchserve {model} on {args.name} on frame {frame_timestamp} ran in {toc-tic}s and returned {response} and was pipelined to {targets_found}")
@@ -412,7 +432,7 @@ def process_image(client, image, args):
                 _objects.extend(filtered)
                 _targets_found.extend(targets_found)
 
-    detection_time = datetime.datetime.now().strftime(DATETIME_FORMAT)
+    detection_time = datetime.now(EST).strftime(DATETIME_FORMAT)
 
     if len(_targets_found) > 0:
         logger.debug(f"{len(_targets_found)} targets found on frame {frameuuid} with frame timestamp {frame_timestamp} ")
@@ -435,7 +455,7 @@ def fire_events(client, args, img, objects, stamp, frameuuid):
             obj[DATA_GRAND_PARENT_ID] = obj_by_uuid[obj[DATA_PARENT_ID]][DATA_PARENT_ID]
 
     for obj in objects:
-        if args.detect_dups > 0 and obj[DATA_SIMILARITY_TO_LAST] < (args.detect_dups/100):
+        if (args.detect_dups > 0 and obj[DATA_SIMILARITY_TO_LAST] < (args.detect_dups/100)) or obj[DATA_SIMILARITY_TO_LAST]<0:
             prefix = f"{args.name.lower()}"
             directory = args.directory
             crop_save_path = f"{directory}/{prefix}_{stamp}_{obj[DATA_MODEL]}_{obj[DATA_PREDICTION_TYPE]}_{obj[DATA_NAME]}_{obj[DATA_UNIQUE_ID]}.jpg"
@@ -448,7 +468,7 @@ def fire_events(client, args, img, objects, stamp, frameuuid):
             logger.debug(f"Sending to topic {args.mqtt_topic} message {message}")
             client.publish(args.mqtt_topic, message, 1)
         else:
-            logger.debug(f"Skipping duplicate for similarity of {obj[DATA_SIMILARITY_TO_LAST]}")
+            logger.debug(f"Skipping event for duplicate similarity of {obj[DATA_SIMILARITY_TO_LAST]}")
 
 
 def save_image(args, img, objects, stamp, frameuuid):
@@ -480,6 +500,8 @@ def save_image(args, img, objects, stamp, frameuuid):
     all_nobox_save_path_latest = (f"{directory}/all_latest_nobox.jpg")
     all_latest_crop = (f"{directory}/all_latest_crop.jpg")
 
+    has_boxes = False
+
     for obj in objects:
         inc = 0
         label = obj[DATA_NAME]
@@ -506,9 +528,13 @@ def save_image(args, img, objects, stamp, frameuuid):
         box_save_path = f"{directory}/{prefix}_{stamp}_box_{frameuuid}.jpg"
         nobox_save_path = f"{directory}/{prefix}_{stamp}_nobox_{frameuuid}.jpg"
 
-        if args.show_boxes and prediction_type == DATA_PREDICTION_TYPE_OBJECT:
+        if args.show_boxes:
             logger.debug(f"Drawing boxes")
-            box_colour = (255, 255, 0)
+            has_boxes = True
+            if prediction_type == DATA_PREDICTION_TYPE_CLASS:
+                box_colour = (255, 255, 0)
+            else:
+                box_colour = (0, 255, 0)
 
             box_label = f"{model}.{label}: {confidence:.1f}%"
             if predid in obj_by_puuid:
@@ -562,6 +588,12 @@ def save_image(args, img, objects, stamp, frameuuid):
                 x2 = min(eccx+ecw/2,w)
                 y2 = min(eccy+ech/2,h)
                 imcp = img.crop((x1, y1, x2, y2))
+                #watermark
+                draw = ImageDraw.Draw(imcp)
+                fz = int(100 * imcp.width / 600)
+                font = ImageFont.truetype("/mnt/nas_downloads/deepstack/tstreamer/tstreamer/arial.ttf", fz)
+                #draw.text((0, 0), datetime.now(EST).strftime("%H:%M"), font=font, fill="#39ff14", stroke_width=2, stroke_fill="#39ff14")
+                draw.text((0, 0), datetime.now(EST).strftime("%H:%M"), font=font, fill="#f93822")
 
                 saved_crops_pil[predid] = imc
                 saved_crops_pil_pad[predid] = imcp
@@ -637,7 +669,7 @@ def save_image(args, img, objects, stamp, frameuuid):
             if prediction_type == DATA_PREDICTION_TYPE_OBJECT:
                 if args.save_timestamped:
                     imc.save(crop_save_path)
-                    imc.save(crop_save_path_pad)
+                    imcp.save(crop_save_path_pad)
                 if args.save_latest:
                     imc.save(crop_save_path_latest)
                     imc.save(all_crop_save_path_latest)
@@ -661,18 +693,17 @@ def save_image(args, img, objects, stamp, frameuuid):
 
 
     if args.save_latest:
-        if args.show_boxes:
+        if args.show_boxes and has_boxes:
             img.save(box_save_path_latest)
             img.save(all_box_save_path_latest)
         imgc.save(nobox_save_path_latest)
         imgc.save(all_nobox_save_path_latest)
 
     if savebox:
-        if len(objects) > 0 and args.save_timestamped:
-            if args.show_boxes:
-                img.save(box_save_path)
-            imgc.save(nobox_save_path)
-        #_LOGGER.debug("Torchserve saved uncropped images")
+        if args.show_boxes and has_boxes:
+            logger.debug(f"Saving crops")
+            img.save(box_save_path)
+        imgc.save(nobox_save_path)
 
 
 mqtt_connected = False
@@ -748,7 +779,8 @@ if __name__ == '__main__':
         logger.info("Video stream created")
 
     i = 1
-    while True:
+    loop = True
+    while loop:
         # Wait for the next frame
         if "rtsp" in args.stream:
             if not video.frame_available():
@@ -756,8 +788,11 @@ if __name__ == '__main__':
 
         if "rtsp" in args.stream:
             frame = video.frame()
-        else:
+        elif "http" in args.stream:
             frame = Image.open(requests.get(args.stream, stream=True).raw)
+        else:
+            frame = Image.open(args.stream)
+            loop = False
 
         tic = time.perf_counter()
         try:
