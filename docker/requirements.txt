@@ -13,3 +13,4 @@ PyGObject
 pytesseract
 scikit-image
 imutils
+tritonclient[all]

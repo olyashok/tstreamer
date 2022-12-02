@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 class S(BaseHTTPRequestHandler):
     def refresh_labels(self):
         print(f"Loading labels")
-        labels = "/mnt/nas_downloads/data/hassio/tstreamer/labels.csv"
+        labels = "/mnt/localshared/data/hassio/tstreamer/labels.csv"
         self.df = pd.read_csv(labels, header=0)
         self.df.columns = ['stamp', 'uuid', 'puuid', 'entity', 'model', 'confidence', 'similarity', 'label', 'area', 'x1', 'y1', 'x2', 'y2']
         self.df['gpuuid'] = self.df['puuid'].map(self.df.set_index('uuid')['puuid'])

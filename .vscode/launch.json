@@ -4,13 +4,6 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
-
-
-
-
-
-
-
         {
             "name": "Python: GS2MQTT test",
             "type": "python",
@@ -18,18 +11,45 @@
             "program": "/mnt/nas_downloads/deepstack/tstreamer/tstreamer/gs2mqtt.py",
             "console": "integratedTerminal",
             "args": [
-                "--name=uvc_g3_pro_a",
-                "--stream=/mnt/nas_downloads/data/hassio/tstreamer_dev/test.jpg",
+                "--name=uvc_g4_doorbell_high",
+                "--stream=/mnt/localshared/data/hassio/tstreamer_dev/test.jpg",
                 //"--stream=http://192.168.10.198/snap.jpeg",
                 "--torchserve-ip=192.168.10.23",
                 //"--test-image=/mnt/nas_downloads/data/unifitest/torchserve_uvc_g4_pro_946e_2021-03-05_12-29-54_nobox.jpg",
-                "--directory=/mnt/nas_downloads/data/hassio/tstreamer_dev",
+                "--directory=/mnt/localshared/data/hassio/tstreamer_dev",
                 "--save-timestamped=True",
                 "--save-crops=True",
                 "--save-latest=True",
                 "--read-time=True",
                 "--show-boxes=True",
                 "--detect-dups=85",
+                "--save-labels=True",
+                "--mqtt-ip=192.168.10.22",
+                "--mqtt-user=xaser",
+                "--min-confidence=50",
+                "--mqtt-password=SnetBil8a",
+                "--debug=DEBUG"
+                ],
+        },
+        {
+            "name": "Python: GS2MQTT triton test",
+            "type": "python",
+            "request": "launch",
+            "program": "/mnt/nas_downloads/deepstack/tstreamer/tstreamer/gs2mqtt.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--name=uvc_test_high",
+                "--stream=/mnt/localshared/data/hassio/tstreamer_dev/test.jpg",
+                //"--stream=http://192.168.10.198/snap.jpeg", // dock
+                "--torchserve-ip=192.168.10.23",
+                //"--test-image=/mnt/nas_downloads/data/unifitest/torchserve_uvc_g4_pro_946e_2021-03-05_12-29-54_nobox.jpg",
+                "--directory=/mnt/localshared/data/hassio/tstreamer_dev",
+                "--save-timestamped=True",
+                "--save-crops=True",
+                "--save-latest=True",
+                "--read-time=True",
+                "--show-boxes=True",
+                "--detect-dups=0",
                 "--save-labels=True",
                 "--mqtt-ip=192.168.10.22",
                 "--mqtt-user=xaser",

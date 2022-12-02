@@ -1,4 +1,4 @@
-ARG BASE_IMAGE="nvcr.io/nvidia/cuda:11.1.1-cudnn8-devel-ubuntu18.04"
+ARG BASE_IMAGE="nvcr.io/nvidia/cuda:11.7.1-cudnn8-devel-ubuntu18.04"
 FROM ${BASE_IMAGE} AS deps
 
 ENV PYTHONUNBUFFERED TRUE
@@ -7,20 +7,27 @@ USER root
 
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
+ENV TZ=America/New_York
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-RUN apt-get update && apt-get install -y software-properties-common && add-apt-repository -y ppa:deadsnakes/ppa \
+RUN apt-get update && apt-get install -y software-properties-common lsb-release && add-apt-repository -y ppa:deadsnakes/ppa \
   && apt-get update \
   && apt-get install -y sudo git mc vim cmake wget curl bison flex libbison-dev libfl-dev libfl2 autopoint \
   mosquitto mosquitto-clients \
   autoconf automake build-essential cmake git-core libass-dev libfreetype6-dev libgnutls28-dev libsdl2-dev libtool libva-dev libvdpau-dev libvorbis-dev libxcb1-dev libxcb-shm0-dev libxcb-xfixes0-dev \
   meson ninja-build pkg-config texinfo wget yasm zlib1g-dev nasm libx264-dev libvpx-dev libx265-dev libnuma-dev libfdk-aac-dev libunistring-dev libmp3lame-dev libopus-dev libsdl-pango-dev libjpeg-dev libbz2-dev libflac-dev libssl-dev libsrtp2-dev libmpeg2-4-dev libgirepository1.0-dev python3-cairo-dev \
-  python3.8 python3.8-dev python3-pip \
+  python3.8 python3.8-dev python3.8-distutils python3-pip \
   libtesseract-dev tesseract-ocr \
   && rm -rf /var/lib/apt/lists/*
 
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.6 1 && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.8 2 && update-alternatives --set python3 /usr/bin/python3.8 && python3 -m pip install --upgrade pip
+# Cmake
+RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | sudo tee /etc/apt/trusted.gpg.d/kitware.gpg >/dev/null
+RUN sudo apt-add-repository "deb https://apt.kitware.com/ubuntu/ $(lsb_release -cs) main"
+RUN apt-get update && apt install kitware-archive-keyring && rm /etc/apt/trusted.gpg.d/kitware.gpg && apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 6AF7F09730B3F0A4 && apt update && apt install -y cmake
+
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.6 1 && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.8 2 && update-alternatives --set python3 /usr/bin/python3.8 && python3 -m pip install --upgrade pip && pip install --upgrade setuptools && pip install --upgrade distlib
 
 RUN addgroup --gid 1000 tstreamer && useradd -rm -d /home/tstreamer -s /bin/bash -G sudo -u 1000 --gid 1000 tstreamer && mkdir -p /home/tstreamer/tmp && echo 'tstreamer:tstreamer' | chpasswd
 
@@ -50,7 +57,8 @@ RUN wget -qO - http://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-
 #nvidia libs
 USER root
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64/:/usr/local/cuda/lib64/stubs:$LD_LIBRARY_PATH
-ARG NVIDIA_DRIVER_VERSION="455.38"
+#ARG NVIDIA_DRIVER_VERSION="455.38"
+ARG NVIDIA_DRIVER_VERSION="515.65.01"
 ENV NVIDIA_DRIVER_VERSION=${NVIDIA_DRIVER_VERSION}
 RUN echo $NVIDIA_DRIVER_VERSION
 COPY gst-nvenc/libnvidia-encode.so.${NVIDIA_DRIVER_VERSION} /usr/local/cuda/lib64/stubs/libnvidia-encode.so.1
@@ -62,7 +70,7 @@ FROM deps as ffmpeg
 # ffmpeg
 USER tstreamer
 WORKDIR /home/tstreamer
-RUN git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg_source/ --branch release/4.2 --single-branch
+RUN git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg_source/ --branch release/5.1 --single-branch
 WORKDIR /home/tstreamer/ffmpeg_source
 RUN PATH="$HOME/.local/bin:$PATH" PKG_CONFIG_PATH="/usr/local/lib/pkgconfig" ./configure \
   --prefix="$HOME/.local" \
@@ -96,13 +104,13 @@ COPY --from=ffmpeg /home/tstreamer/.local /home/tstreamer/.local
 USER tstreamer
 WORKDIR /home/tstreamer
 RUN git clone https://github.com/GStreamer/orc.git \
-  && git clone https://github.com/GStreamer/gstreamer.git --branch 1.18.3 --single-branch \
-  && git clone https://github.com/GStreamer/gst-plugins-base.git --branch 1.18.3 --single-branch \
-  && git clone https://github.com/GStreamer/gst-plugins-good.git --branch 1.18.3 --single-branch \
-  && git clone https://github.com/GStreamer/gst-plugins-bad.git --branch 1.18.3 --single-branch \
-  && git clone https://github.com/GStreamer/gst-plugins-ugly.git --branch 1.18.3 --single-branch \
-  && git clone https://github.com/GStreamer/gst-libav.git --branch 1.18.3 --single-branch \
-  && git clone https://github.com/GStreamer/gst-python.git --branch 1.18.3 --single-branch \
+  && git clone https://github.com/GStreamer/gstreamer.git --single-branch \
+  && git clone https://github.com/GStreamer/gst-plugins-base.git --single-branch \
+  && git clone https://github.com/GStreamer/gst-plugins-good.git --single-branch \
+  && git clone https://github.com/GStreamer/gst-plugins-bad.git --single-branch \
+  && git clone https://github.com/GStreamer/gst-plugins-ugly.git --single-branch \
+  && git clone https://github.com/GStreamer/gst-libav.git --single-branch \
+  && git clone https://github.com/GStreamer/gst-python.git --single-branch \
   && git clone https://github.com/GNOME/pygobject
 
 USER tstreamer
@@ -111,7 +119,7 @@ cd /home/tstreamer/$gs; \
 rm -rf /home/tstreamer/$gs/build; \
 mkdir -p /home/tstreamer/$gs/build; \
 cd /home/tstreamer/$gs/build; \
-/home/tstreamer/.local/bin/meson --prefix="$HOME/.local" -Dbuildtype=release -Dpackage-origin=xaser -Dpackage-name="GStreamer" --wrap-mode=nodownload; \
+/home/tstreamer/.local/bin/meson --prefix="$HOME/.local" -Dbuildtype=release; \
 ninja; \
 ninja install; \
 done

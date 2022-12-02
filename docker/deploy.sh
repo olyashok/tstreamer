@@ -44,11 +44,11 @@ done
 shift $((OPTIND - 1))
 
 container=tstreamer_${name}
-DOCKER_TAG="tstreamer/tstreamer:latest-xaser-gpu"
+DOCKER_TAG="tstreamer/tstreamer_triton:latest-xaser-gpu"
 
 echo "Stopping $container"
 docker stop $container
 echo "Removing $container"
 docker rm $container
 echo "Running $container"
-docker run -ti -d --runtime=nvidia -e NVIDIA_DRIVER_CAPABILITIES=video,compute,utility --ipc=host --net="host" --restart=always --name $container -v torchserve_bash:/home/bash -v /mnt/nas_downloads:/mnt/nas_downloads $DOCKER_TAG /usr/bin/python3 /mnt/nas_downloads/deepstack/tstreamer/tstreamer/gs2mqtt.py --name=${name} --stream=${rtsp} --torchserve-ip=192.168.10.23 --directory="${target_dir}" --save-timestamped=True --save-latest=True --save-crops=True --show-boxes=True --save-labels=True --mqtt-ip=192.168.10.22 --mqtt-user=xaser --mqtt-password=SnetBil8a --debug=$loglevel --save-frame=$frame --delay=${delay} --fire-events=True --read-time=${tess} --detect-dups=$dups
+docker run -ti -d --runtime=nvidia -e NVIDIA_DRIVER_CAPABILITIES=video,compute,utility --ipc=host --net="host" --restart=always --name $container -v torchserve_bash:/home/bash -v /mnt/nas_downloads:/mnt/nas_downloads -v /mnt/localshared:/mnt/localshared $DOCKER_TAG /usr/bin/python3 /mnt/nas_downloads/deepstack/tstreamer/tstreamer/gs2mqtt.py --name=${name} --stream=${rtsp} --torchserve-ip=192.168.10.23 --directory="${target_dir}" --save-timestamped=True --save-latest=True --save-crops=True --show-boxes=True --save-labels=True --mqtt-ip=192.168.10.22 --mqtt-user=xaser --mqtt-password=SnetBil8a --debug=$loglevel --save-frame=$frame --delay=${delay} --fire-events=True --read-time=${tess} --detect-dups=$dups --min-confidence=80

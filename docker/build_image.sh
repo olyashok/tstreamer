@@ -1,6 +1,6 @@
 #!/bin/bash
 
-BASE_IMAGE="nvcr.io/nvidia/cuda:11.1.1-cudnn8-devel-ubuntu18.04"
+BASE_IMAGE="nvcr.io/nvidia/cuda:11.7.1-cudnn8-devel-ubuntu18.04"
 DOCKER_TAG="tstreamer/tstreamer:latest-xaser-gpu"
 NVIDIA_DRIVER_VERSION=`modinfo nvidia | grep "^version:" | awk '{print $2}'`
 

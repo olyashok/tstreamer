@@ -1,6 +1,5 @@
 #!/usr/bin/python3
 from __future__ import annotations
-from skimage.metrics import structural_similarity as compare_ssim
 from PIL import Image, ImageDraw, ImageFont
 import argparse
 import io
@@ -12,7 +11,6 @@ from datetime import datetime, tzinfo, timedelta
 import json
 import uuid
 import sys
-import time
 import logging
 from logging.handlers import *
 import requests
@@ -23,6 +21,14 @@ import paho.mqtt.client as mqttClient
 import pytesseract
 import os.path
 import os
+
+import tritonclient.grpc as grpcclient
+from tritonclient.utils import InferenceServerException
+from processing import preprocess, postprocess
+from render import render_box, render_filled_box, get_text_size, render_text, RAND_COLORS
+from labels import COCOLabels
+from boundingbox import BoundingBox
+
 
 class Zone(tzinfo):
     def __init__(self,offset,isdst,name):
@@ -36,8 +42,8 @@ class Zone(tzinfo):
     def tzname(self,dt):
          return self.name
 
-GMT = Zone(0,False,'GMT')
-EST = Zone(-5,False,'EST')
+GMT = Zone(0,True,'GMT')
+EST = Zone(-5,True,'EST')
 
 class Video():
     def __init__(self, stream):
@@ -149,6 +155,7 @@ DATA_CONFIDENCE = "confidence"
 DATA_UNIQUE_ID = "uuid"
 DATA_CROPID = "cropid"
 DATA_IMAGE = "image"
+DATA_IMAGE_PIL = "image_pil"
 DATA_PARENT_ID = "parent_id"
 DATA_ENTITY_ID = "entity_id"
 DATA_GRAND_PARENT_ID = "grand_parent_id"
@@ -187,6 +194,36 @@ def get_objects(cropid: str, predictions: list, model: str, img_width: int, img_
                     DATA_CONFIDENCE: confidence * 100,
                     DATA_MODEL: model,
                     DATA_PREDICTION_TYPE: DATA_PREDICTION_TYPE_CLASS,
+                    DATA_UNIQUE_ID: uuid.uuid4().hex,
+                    DATA_PARENT_ID: cropid,
+                    DATA_SIMILARITY_TO_LAST: -1
+                }
+            )
+    elif isinstance(predictions, list) and (len(predictions)==0 or isinstance(predictions[0], BoundingBox)):
+        for box in predictions:
+            box2 = {
+                "height": round(box.height() / img_height, decimal_places),
+                "width": round(box.width() / img_width, decimal_places),
+                "y_min": round(box.y1 / img_height, decimal_places),
+                "x_min": round(box.x1 / img_width, decimal_places),
+                "y_max": round(box.y2 / img_height, decimal_places),
+                "x_max": round(box.x2 / img_width, decimal_places),
+            }
+            box_area = round(box2["height"] * box2["width"], decimal_places)
+            centroid = {
+                "x": round(box2["x_min"] + (box2["width"] / 2), decimal_places),
+                "y": round(box2["y_min"] + (box2["height"] / 2), decimal_places),
+            }
+            confidence = round(box.confidence, decimal_places)
+            objects.append(
+                {
+                    DATA_BOX: box2,
+                    DATA_BOX_AREA: box_area,
+                    DATA_CENTROID: centroid,
+                    DATA_NAME: COCOLabels(box.classID).name.lower(),
+                    DATA_CONFIDENCE: confidence * 100,
+                    DATA_MODEL: model,
+                    DATA_PREDICTION_TYPE: DATA_PREDICTION_TYPE_OBJECT,
                     DATA_UNIQUE_ID: uuid.uuid4().hex,
                     DATA_PARENT_ID: cropid,
                     DATA_SIMILARITY_TO_LAST: -1
@@ -233,10 +270,39 @@ def get_objects(cropid: str, predictions: list, model: str, img_width: int, img_
     return sorted(objects, key=lambda i: i['bounding_box']['x_min'])
 
 
-def infer_via_rest(host, port, model_name, model_input):
+def infer_via_rest(host, port, model_name, model_input, pil_image):
     """Run inference via REST."""
     url = f"http://{host}:{port}/predictions/{model_name}"
-    prediction = requests.post(url, data=model_input, timeout=(5, 1)).text
+    try:
+        prediction = requests.post(url, data=model_input, timeout=(5, 1)).text
+    except:
+        INPUT_NAMES = ["images"]
+        OUTPUT_NAMES = ["num_dets", "det_boxes", "det_scores", "det_classes"]
+        size = 1280
+        inputs = []
+        outputs = []
+        inputs.append(grpcclient.InferInput(INPUT_NAMES[0], [1, 3, size, size], "FP32"))
+        outputs.append(grpcclient.InferRequestedOutput(OUTPUT_NAMES[0]))
+        outputs.append(grpcclient.InferRequestedOutput(OUTPUT_NAMES[1]))
+        outputs.append(grpcclient.InferRequestedOutput(OUTPUT_NAMES[2]))
+        outputs.append(grpcclient.InferRequestedOutput(OUTPUT_NAMES[3]))
+
+        image = np.asarray(pil_image)
+        #image = image / 255
+        image = preprocess(image, [size, size])
+        image = np.expand_dims(image, axis=0)
+        #image = np.transpose(image, axes=[0, 3, 1, 2])
+        #image = image.astype(np.float32)
+
+        inputs[0].set_data_from_numpy(image)
+        results = triton_client.infer(model_name=model_name, inputs=inputs, outputs=outputs)
+
+        num_dets = results.as_numpy(OUTPUT_NAMES[0])
+        det_boxes = results.as_numpy(OUTPUT_NAMES[1])
+        det_scores = results.as_numpy(OUTPUT_NAMES[2])
+        det_classes = results.as_numpy(OUTPUT_NAMES[3])
+        input_image = image
+        prediction = postprocess(num_dets, det_boxes, det_scores, det_classes, pil_image.width, pil_image.height, [size, size])
     return prediction
 
 
@@ -292,25 +358,35 @@ def process_image(client, image, args):
     img_byte_arr = io.BytesIO()
     pil_image.save(img_byte_arr, format='JPEG', quality=99)
     img_byte_arr = img_byte_arr.getvalue()
-    images = {DATA_KEY_INPUT: [{DATA_IMAGE: img_byte_arr, DATA_CROPID: frameuuid, DATA_WIDTH: _image_width, DATA_HEIGHT: _image_height}]}
+    images = {DATA_KEY_INPUT: [{DATA_IMAGE: img_byte_arr, DATA_IMAGE_PIL: pil_image, DATA_CROPID: frameuuid, DATA_WIDTH: _image_width, DATA_HEIGHT: _image_height}]}
 
     _objects = []  # The parsed raw data
     _targets_found = []
 
+    EXCLUDES=""
+    FNAME="/mnt/localshared/data/hassio/tstreamer/exclude.lst"
+    output=""
+    for line in open(FNAME):
+        li=line.strip()
+        if not li.startswith("#"):
+            output += li;
+    if (output!=EXCLUDES):
+        EXCLUDES = output
+        #logger.info(f"Excludes changed to: {EXCLUDES}")
+
     _models = ['> | yolov5x-1280 | {"person": ">", "boat": ">", "car,truck,bus": "car", "dog,cat,bear,teddy bear,sheep,cow": "animal", "*": "null"} | ' +
-               '(\"pro_c\" not in args.name or (.2 <= obj[\"centroid\"][\"x\"] <= .78 and .23 <= obj[\"centroid\"][\"y\"] <= 1 and not (.53 <= obj[\"centroid\"][\"x\"] <= .59 and .23 <= obj[\"centroid\"][\"y\"] <= .33))) and '+ #dock area only and not boat lift
-               '(\"946\" not in args.name or not (.384 <= obj[\"centroid\"][\"x\"] <= .394 and 0.185 <= obj[\"centroid\"][\"y\"] <= .195)) and '+ #exclude tree
-               '(\"946\" not in args.name or not (.641 <= obj[\"centroid\"][\"x\"] <= .671 and 0.134 <= obj[\"centroid\"][\"y\"] <= .145)) and '+ #exclude weird branch
-               '(\"pro_a\" not in args.name or not (.92 <= obj[\"centroid\"][\"y\"])) and '+ #exclude rock
-               '(\"pro_a\" not in args.name or not (.48 <= obj[\"centroid\"][\"x\"] <= 1 and 0 <= obj[\"centroid\"][\"y\"] <= .47)) and '+ #exclude circle in driveway
-               '(\"pro_a\" not in args.name or not (.230 <= obj[\"centroid\"][\"x\"] <= .240 and 0.281 <= obj[\"centroid\"][\"y\"] <= .291)) and '+ #exclude tree
-               '(\"pro_a\" not in args.name or not (.47 <= obj[\"centroid\"][\"x\"] <= .63 and 0.79 <= obj[\"centroid\"][\"y\"] <= .92)) and '+ #exclude rock
-               '(\"pro_b\" not in args.name or \"boat\" not in obj[\"name\"]) and '+ # exclude boats
+               EXCLUDES +
                '(\"doorbell\" not in args.name or obj[\"box_area\"]>0.01) and '+
-               '(\"doorbell\" not in args.name or not (.71 <= obj[\"centroid\"][\"x\"] <= .81 and 0.29 <= obj[\"centroid\"][\"y\"] <= .73)) and '+ #exclude girland
-               '(\"g4_bullet\" not in args.name or not (.36 <= obj[\"centroid\"][\"x\"] <= .4 and 0.22 <= obj[\"centroid\"][\"y\"] <= .34)) and '+ #exclude chair
                '(obj[\"box_area\"]>0.001)', # no small objects
-               'person,car,animal | unifiprotect | {"object,package": "null", "*": ">"} | *']
+               'person,car,animal | unifiprotect | {"object,package": "null", "*": ">"} | ' +
+               '(\"flex_a\" not in args.name or \"myx3m\" not in obj[\"name\"])' #exclude car in flex
+               ]
+
+    _models = ['> | yolov7x | {"person": ">", "boat": ">", "car,truck,bus": "car", "dog,cat,bear,teddy bear,sheep,cow": "animal", "*": "null"} | ' +
+               EXCLUDES +
+               '(\"doorbell\" not in args.name or obj[\"box_area\"]>0.01) and '+
+               '(obj[\"box_area\"]>0.001)'
+               ]
 
     if (args.read_time):
         time_crop = pil_image.crop((0, 0, 0.22 * _image_width, 0.037 * _image_height))
@@ -349,13 +425,16 @@ def process_image(client, image, args):
 
             for index in range(len(current_images)):
                 current_image = current_images[index][DATA_IMAGE]
+                current_image_pil = current_images[index][DATA_IMAGE_PIL]
                 current_width = current_images[index][DATA_WIDTH]
                 current_height = current_images[index][DATA_HEIGHT]
                 cropid = current_images[index][DATA_CROPID]
 
                 tic = time.perf_counter()
 
-                response = eval(infer_via_rest(args.torchserve_ip, args.torchserve_port, model, current_image))
+                response = infer_via_rest(args.torchserve_ip, args.torchserve_port, model, current_image, current_image_pil)
+                if isinstance(response, str):
+                    response = eval(response)
                 toc = time.perf_counter()
 
                 if isinstance(response, str) or (isinstance(response, dict) and 'code' in response.keys()):
@@ -363,6 +442,7 @@ def process_image(client, image, args):
                     continue
 
                 all_objects = get_objects(cropid, response, model, current_width, current_height)
+                initial_objects = all_objects
 
                 #top1
                 if len(all_objects) > 0 and all_objects[0][DATA_PREDICTION_TYPE] == DATA_PREDICTION_TYPE_CLASS:
@@ -410,7 +490,7 @@ def process_image(client, image, args):
                     targets_found = [obj for obj in targets_found if (obj["confidence"] > args.min_confidence)]
 
                 if len(response) > 0:
-                    logger.debug(f"Torchserve {model} on {args.name} on frame {frame_timestamp} ran in {toc-tic}s and returned {response} and was pipelined to {targets_found}")
+                    logger.debug(f"Torchserve {model} on {args.name} on frame {frame_timestamp} ran in {toc-tic}s and returned {initial_objects} and was pipelined to {targets_found}")
 
                 #pipe crops
                 if len(targets_found) > 0 and targets_found[0][DATA_PREDICTION_TYPE] != DATA_PREDICTION_TYPE_CLASS:
@@ -707,7 +787,7 @@ def save_image(args, img, objects, stamp, frameuuid):
 
 
 mqtt_connected = False
-
+triton_client = grpcclient.InferenceServerClient(url='localhost:8001', verbose=False)
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:

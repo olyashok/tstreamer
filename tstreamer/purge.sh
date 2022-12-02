@@ -1,6 +1,11 @@
 #!/bin/bash
 
 cropdir="/mnt/nas_downloads/data/hassio/tstreamer"
+hostname=`hostname`
+
+if [ "$hostname" = "xaser-ryzen" ]; then
+    cropdir="/mnt/localshared/data/hassio/tstreamer"
+fi
 
 if [ ! -d "$cropdir" ]; then
     echo "$cropdir is not mounted. exiting."

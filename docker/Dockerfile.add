@@ -1,0 +1,3 @@
+FROM tstreamer/tstreamer:latest-xaser-gpu
+
+RUN pip install tritonclient[all] pytesseract
