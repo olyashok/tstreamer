@@ -21,6 +21,7 @@ import paho.mqtt.client as mqttClient
 import pytesseract
 import os.path
 import os
+import pytz
 
 import tritonclient.grpc as grpcclient
 from tritonclient.utils import InferenceServerException
@@ -29,21 +30,6 @@ from render import render_box, render_filled_box, get_text_size, render_text, RA
 from labels import COCOLabels
 from boundingbox import BoundingBox
 
-
-class Zone(tzinfo):
-    def __init__(self,offset,isdst,name):
-        self.offset = offset
-        self.isdst = isdst
-        self.name = name
-    def utcoffset(self, dt):
-        return timedelta(hours=self.offset) + self.dst(dt)
-    def dst(self, dt):
-            return timedelta(hours=1) if self.isdst else timedelta(0)
-    def tzname(self,dt):
-         return self.name
-
-GMT = Zone(0,True,'GMT')
-EST = Zone(-5,True,'EST')
 
 class Video():
     def __init__(self, stream):
@@ -512,7 +498,7 @@ def process_image(client, image, args):
                 _objects.extend(filtered)
                 _targets_found.extend(targets_found)
 
-    detection_time = datetime.now(EST).strftime(DATETIME_FORMAT)
+    detection_time = datetime.now(pytz.timezone('US/Eastern')).strftime(DATETIME_FORMAT)
 
     if len(_targets_found) > 0:
         logger.debug(f"{len(_targets_found)} targets found on frame {frameuuid} with frame timestamp {frame_timestamp} ")
@@ -673,7 +659,7 @@ def save_image(args, img, objects, stamp, frameuuid):
                 fz = int(100 * imcp.width / 600)
                 font = ImageFont.truetype("/mnt/nas_downloads/deepstack/tstreamer/tstreamer/arial.ttf", fz)
                 #draw.text((0, 0), datetime.now(EST).strftime("%H:%M"), font=font, fill="#39ff14", stroke_width=2, stroke_fill="#39ff14")
-                draw.text((0, 0), datetime.now(EST).strftime("%H:%M"), font=font, fill="#f93822")
+                draw.text((0, 0), datetime.now(pytz.timezone('US/Eastern')).strftime("%H:%M"), font=font, fill="#f93822")
 
                 saved_crops_pil[predid] = imc
                 saved_crops_pil_pad[predid] = imcp
