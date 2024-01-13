@@ -1,16 +1,12 @@
-# base ----------------------------------------
-Cython
-numpy
-scipy
-gputil
-grpcio
+ultralytics
+tritonclient[all]
+pytesseract
+scikit-image
 paho-mqtt
 pandas
 streamlit
-meson
-pycairo
-PyGObject
-pytesseract
-scikit-image
-imutils
-tritonclient[all]
+grpcio
+numpy
+scipy
+opencv-python==4.8.0.74
+opencv-contrib-python==4.8.0.74

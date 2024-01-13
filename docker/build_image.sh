@@ -1,7 +1,6 @@
 #!/bin/bash
 
-BASE_IMAGE="nvcr.io/nvidia/cuda:11.7.1-cudnn8-devel-ubuntu18.04"
-DOCKER_TAG="tstreamer/tstreamer:latest-xaser-gpu"
+DOCKER_TAG="tstreamer2/tstreamer2:latest"
 NVIDIA_DRIVER_VERSION=`modinfo nvidia | grep "^version:" | awk '{print $2}'`
 
-DOCKER_BUILDKIT=1 docker build --file Dockerfile --build-arg BASE_IMAGE=$BASE_IMAGE --build-arg NVIDIA_DRIVER_VERSION="$NVIDIA_DRIVER_VERSION" -t $DOCKER_TAG .
+DOCKER_BUILDKIT=1 docker build --file Dockerfile -t $DOCKER_TAG .
