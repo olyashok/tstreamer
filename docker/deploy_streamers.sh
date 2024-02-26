@@ -16,8 +16,10 @@ cd /mnt/nas_downloads/deepstack/tstreamer2/docker/
 ./deploy.sh http://192.168.10.193/snap.jpeg uvc_g3_flex_a_high 10000
 #deck
 ./deploy.sh http://192.168.10.191/snap.jpeg uvc_g4_bullet_a_high 10000
+# poolhouse
+./deploy.sh http://192.168.10.203/snap.jpeg uvc_g4_bullet_b_high 10000
 #nursery
-./deploy.sh http://192.168.10.159/snap.jpeg uvc_g3_flex_b_high 20000
+#./deploy.sh http://192.168.10.159/snap.jpeg uvc_g3_flex_b_high 20000
 
 
 #./deploy.sh rtsp://192.168.10.1:7447/JdCDi8nwunLfXqbD uvc_g3_flex_b 10
